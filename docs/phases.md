@@ -82,44 +82,75 @@ This project is built incrementally. Each phase is a standalone commit that leav
 
 ---
 
-## Phase 5 — End-to-End Testing 🔜
+## Phase 5 — End-to-End Testing ✅
 
 **Goal**: Playwright + Spring integration tests that run against the real gateway and verify the full stack.
 
-**Planned**:
-- Playwright tests (TypeScript) against `http://localhost:8000`
-  - Shorten a URL, verify response shape
-  - Follow redirect, verify destination
-  - Check analytics table updates after redirect
-  - Verify `/my-links` auth gate
+**What was built**:
 - Spring `@SpringBootTest` integration tests for write-api and read-api
-- `test.sh` script that spins up Docker Compose, runs all tests, tears down
+  - `write-api`: 4 tests — 201 on valid URL, 400 on blank/missing URL, idempotent duplicate handling
+  - `read-api`: 4 tests — 302 with `Location` header on known code, 404 on unknown, cache-hit path
+  - Test profiles (`application-test.properties`) use embedded H2, mock Redis and Kafka via `@MockBean`
+  - H2 TCP server and Google JwtDecoder replaced with mocks so tests run fully offline
+- Playwright E2E tests (`frontend/tests/integration.spec.js`) targeting `http://localhost:8000`
+  - Shorten URL → verify response shape and short URL contains gateway host
+  - Follow redirect → verify destination URL
+  - Analytics dashboard renders table headers
+  - Custom slug creation and redirect verification
+  - `/my-links` history page (auth gate + correct ordering)
+- `test.sh` rewritten for Docker Compose:
+  - Spins up full stack, waits for gateway health
+  - Runs smoke test (shorten + redirect) via curl
+  - Runs `./gradlew :write-api:test :read-api:test`
+  - Runs `npx playwright test`
+  - Tears down with `docker-compose down` on exit
 
 ---
 
-## Phase 6 — Observability 🔜
+## Phase 6 — Observability ✅
 
-**Goal**: Structured logging, metrics, and traces without SigNoz complexity.
+**Goal**: Structured logging, metrics, and distributed traces via SigNoz (OpenTelemetry-native).
 
-**Planned**:
-- Structured JSON logging (Logback + logstash-logback-encoder) in all services
-- Micrometer metrics exposed via Actuator (`/actuator/metrics`, `/actuator/prometheus`)
-- Request tracing headers (`X-Request-Id`) threaded through gateway → services
-- Prometheus scrape config in docker-compose
-- Grafana dashboard (URL creation rate, redirect p99, cache hit ratio, Kafka lag)
+**What was built**:
+- Structured JSON logging (`logstash-logback-encoder`) in all 4 services via `logback-spring.xml`
+  - Every log line is a JSON object with `service`, `level`, `message`, `timestamp`, `requestId` (MDC)
+- `X-Request-Id` tracing threaded end-to-end:
+  - Nginx generates the ID (`$request_id`) if client doesn't supply one
+  - Forwarded via `proxy_set_header X-Request-Id` to all upstreams
+  - `RequestIdFilter` (write-api, read-api, analytics-api) puts it in MDC + echoes in response header
+- OpenTelemetry Java Agent (v2.3.0) baked into all 4 Docker images
+  - Auto-instruments Spring Boot HTTP, JVM, JDBC, Redis, Kafka — zero code changes
+  - Activated via `JAVA_TOOL_OPTIONS=-javaagent:/app/opentelemetry-javaagent.jar` in docker-compose
+  - Sends traces, metrics, and logs to SigNoz via OTLP gRPC on port 4317
+- SigNoz added to docker-compose (4 new services):
+  - `clickhouse-signoz` — dedicated ClickHouse instance for telemetry storage
+  - `otel-collector` (signoz/signoz-otel-collector) — receives OTLP, writes to ClickHouse
+  - `signoz-query-service` — API backend for the SigNoz UI (port 8085)
+  - `signoz` — SigNoz web UI at **http://localhost:3301**
+- `signoz/otel-collector-config.yaml` — OTLP receivers → batch → ClickHouse exporter for traces/metrics/logs
+- Actuator Prometheus endpoint still exposed (`/actuator/prometheus`) for ad-hoc debugging
+- Micrometer service tag (`management.metrics.tags.service`) set per service
 
 ---
 
-## Phase 7 — Persistent Storage 🔜
+## Phase 7 — Persistent Storage ✅
 
 **Goal**: Replace H2 (in-memory, resets on restart) with PostgreSQL.
 
-**Planned**:
-- PostgreSQL 16 added to docker-compose
-- Flyway migrations for schema management
-- Connection pool tuning (HikariCP)
-- H2 kept for unit tests (`@DataJpaTest`)
-- read-api gets its own read replica connection (or same DB, read-only user)
+**What was built**:
+- PostgreSQL 16 added to docker-compose with a named volume (`postgres-data`) so data survives restarts
+- `write-api` and `read-api` both connect to `postgres:5432/urlshortener` via env vars in docker-compose
+- `read-api` no longer depends on `write-api` at startup (H2 TCP server gone); depends on `postgres` directly
+- Flyway (`flyway-core`) added to write-api; `V1__create_url_mappings.sql` creates the table + indexes on first run
+  - `short_code` UNIQUE constraint, index on `long_url` (duplicate detection), partial index on `user_id`
+  - `spring.jpa.hibernate.ddl-auto=validate` in write-api — Hibernate validates against Flyway-managed schema
+- HikariCP tuned in both services:
+  - write-api: max 10 connections, min idle 2
+  - read-api: max 20 connections, min idle 5 (heavier read load)
+- `H2ServerConfig.java` deleted — TCP server no longer needed
+- `h2` moved to `testRuntimeOnly` in both modules — H2 still used for `@SpringBootTest` (via `application-test.properties`)
+- `spring.flyway.enabled=false` added to `write-api/application-test.properties` — schema handled by H2 `create-drop` in tests
+- Test class updated: removed `@MockBean Server h2TcpServer` (class no longer exists)
 
 ---
 
@@ -135,8 +166,8 @@ gantt
         Phase 3 - Analytics           :done,    p3, after p2, 3d
         Phase 4 - Nginx Gateway       :done,    p4, after p3, 2d
     section Quality
-        Phase 5 - E2E Tests           :active,  p5, after p4, 3d
-        Phase 6 - Observability       :         p6, after p5, 3d
+        Phase 5 - E2E Tests           :done,    p5, after p4, 3d
+        Phase 6 - Observability       :done,    p6, after p5, 3d
     section Scale
-        Phase 7 - PostgreSQL          :         p7, after p6, 3d
+        Phase 7 - PostgreSQL          :done,    p7, after p6, 3d
 ```
