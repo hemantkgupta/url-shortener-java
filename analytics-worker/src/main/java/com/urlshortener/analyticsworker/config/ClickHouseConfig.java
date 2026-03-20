@@ -40,10 +40,17 @@ public class ClickHouseConfig {
         return new JdbcTemplate(clickHouseDataSource);
     }
 
-    /** Idempotent schema bootstrap — runs once on startup. */
+    /** Idempotent schema bootstrap — runs once on startup via 'default' DB. */
     private void createSchema(DataSource ds) {
-        try (Connection conn = ds.getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.execute("CREATE DATABASE IF NOT EXISTS analytics");
+        // Replace /analytics with /default so the DB exists before we reference it
+        String bootstrapUrl = url.replaceFirst("/analytics", "/default");
+        try {
+            Properties bootstrapProps = new Properties();
+            bootstrapProps.setProperty("user", username);
+            bootstrapProps.setProperty("password", password);
+            ClickHouseDataSource bootstrapDs = new ClickHouseDataSource(bootstrapUrl, bootstrapProps);
+            try (Connection conn = bootstrapDs.getConnection(); Statement stmt = conn.createStatement()) {
+                stmt.execute("CREATE DATABASE IF NOT EXISTS analytics");
 
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS analytics.url_clicks (
@@ -64,7 +71,8 @@ public class ClickHouseConfig {
                 ORDER BY (user_id, created_at)
                 """);
 
-            log.info("ClickHouse schema bootstrapped");
+                log.info("ClickHouse schema bootstrapped");
+            }
         } catch (Exception e) {
             log.error("Failed to bootstrap ClickHouse schema", e);
             throw new RuntimeException(e);

@@ -1,4 +1,4 @@
-FROM eclipse-temurin:17-jdk-alpine AS build
+FROM eclipse-temurin:17 AS build
 WORKDIR /app
 
 # Copy Gradle wrapper and config first (layer cache)
@@ -12,7 +12,7 @@ RUN chmod +x gradlew && ./gradlew :write-api:dependencies --no-daemon -q 2>/dev/
 COPY write-api/src write-api/src
 RUN ./gradlew :write-api:bootJar --no-daemon -x test
 
-FROM eclipse-temurin:17-jre-alpine
+FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=build /app/write-api/build/libs/*.jar app.jar
 EXPOSE 8080 9092

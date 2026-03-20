@@ -47,10 +47,11 @@ services:
       CLICKHOUSE_PASSWORD: ""
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      test: ["CMD-SHELL", "clickhouse-client --query='SELECT 1' || exit 1"]
       interval: 10s
-      timeout: 5s
-      retries: 10
+      timeout: 10s
+      retries: 15
+      start_period: 30s
 
   # ── Write API (Java Spring Boot, port 8080) ────────────────────────────────
   write-api:
@@ -113,7 +114,7 @@ services:
         condition: service_healthy
     environment:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      APP_CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/analytics
+      APP_CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/analytics?compress=0
       APP_CLICKHOUSE_USERNAME: default
       APP_CLICKHOUSE_PASSWORD: ""
 
@@ -128,7 +129,7 @@ services:
       clickhouse:
         condition: service_healthy
     environment:
-      APP_CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/analytics
+      APP_CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/default?compress=0
       APP_CLICKHOUSE_USERNAME: default
       APP_CLICKHOUSE_PASSWORD: ""
     healthcheck:
@@ -164,7 +165,7 @@ services:
       - read-api
       - analytics-api
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/actuator/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/nginx-health"]
       interval: 10s
       timeout: 5s
       retries: 5

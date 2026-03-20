@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-json'   // Jackson for Kafka JsonDeserializer
     implementation 'org.springframework.kafka:spring-kafka'
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
     implementation 'com.clickhouse:clickhouse-jdbc:0.6.5'
