@@ -3,25 +3,37 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
+//
+// Dev proxy mirrors the Nginx gateway routing (nginx/gateway.conf).
+// In Docker: all traffic goes through gateway:8000.
+// In local dev (`npm run dev`): Vite proxies to the right service directly.
+//
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
   ],
   server: {
+    port: 5173,
     proxy: {
-      // API write calls → write-api (port 8080)
-      '/api/v1': {
+      // ── Write API ──────────────────────────────────────────────────────
+      '/api/v1/shorten': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
-      // Short code redirects → read-api (port 8081)
-      // Matches /{shortCode} paths that aren't assets or /api
-      '/r': {
-        target: 'http://localhost:8081',
+
+      // ── Analytics API ──────────────────────────────────────────────────
+      '/api/v1/analytics': {
+        target: 'http://localhost:8083',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/r/, ''),
+      },
+      '/api/v1/history': {
+        target: 'http://localhost:8083',
+        changeOrigin: true,
       },
     },
+    // Short-code redirects (/{code}) are NOT proxied here because the
+    // Vite dev server would need to catch them before React Router does.
+    // Use the gateway directly (http://localhost:8000/{code}) to test redirects.
   },
 })

@@ -58,14 +58,15 @@ services:
       context: .
       dockerfile: write-api/Dockerfile
     ports:
-      - "8080:8080"
+      - "8080:8080"   # kept for direct access / debugging
     depends_on:
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
     environment:
-      APP_BASE_URL: http://localhost:8081
+      # Short URL base is now the gateway, not read-api directly
+      APP_BASE_URL: http://localhost:8000
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
@@ -81,7 +82,7 @@ services:
       context: .
       dockerfile: read-api/Dockerfile
     ports:
-      - "8081:8081"
+      - "8081:8081"   # kept for direct access / debugging
     depends_on:
       write-api:
         condition: service_healthy
@@ -100,7 +101,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Analytics Worker (Kafka consumer → ClickHouse, port 8082) ─────────────
+  # ── Analytics Worker (Kafka consumer → ClickHouse) ─────────────────────────
   analytics-worker:
     build:
       context: .
@@ -122,7 +123,7 @@ services:
       context: .
       dockerfile: analytics-api/Dockerfile
     ports:
-      - "8083:8083"
+      - "8083:8083"   # kept for direct access / debugging
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -136,16 +137,12 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Frontend (React/Vite via Nginx, port 3000) ─────────────────────────────
+  # ── Frontend (React/Vite via Nginx, port 3000 internal only) ───────────────
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-      args:
-        VITE_WRITE_API_URL: http://localhost:8080
-        VITE_SHORT_LINK_BASE_URL: http://localhost:8081
-    ports:
-      - "3000:80"
+    # No external port — only accessed via the gateway
     depends_on:
       write-api:
         condition: service_healthy
@@ -153,3 +150,21 @@ services:
         condition: service_healthy
       analytics-api:
         condition: service_healthy
+
+  # ── Nginx API Gateway (single entry point, port 8000) ─────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - frontend
+      - write-api
+      - read-api
+      - analytics-api
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
