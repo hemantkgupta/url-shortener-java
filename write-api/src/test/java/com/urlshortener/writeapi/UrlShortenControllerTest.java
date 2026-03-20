@@ -1,7 +1,6 @@
 package com.urlshortener.writeapi;
 
 import com.urlshortener.writeapi.repository.UrlMappingRepository;
-import org.h2.tools.Server;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,10 +31,6 @@ class UrlShortenControllerTest {
 
     @Autowired
     UrlMappingRepository repository;
-
-    // Replace the H2 TCP server bean so no real TCP server is started
-    @MockBean(name = "h2TcpServer")
-    Server h2TcpServer;
 
     // Replace the JwtDecoder so Spring Security doesn't fetch JWK from Google
     @MockBean

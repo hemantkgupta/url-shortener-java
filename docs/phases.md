@@ -133,16 +133,24 @@ This project is built incrementally. Each phase is a standalone commit that leav
 
 ---
 
-## Phase 7 — Persistent Storage 🔜
+## Phase 7 — Persistent Storage ✅
 
 **Goal**: Replace H2 (in-memory, resets on restart) with PostgreSQL.
 
-**Planned**:
-- PostgreSQL 16 added to docker-compose
-- Flyway migrations for schema management
-- Connection pool tuning (HikariCP)
-- H2 kept for unit tests (`@DataJpaTest`)
-- read-api gets its own read replica connection (or same DB, read-only user)
+**What was built**:
+- PostgreSQL 16 added to docker-compose with a named volume (`postgres-data`) so data survives restarts
+- `write-api` and `read-api` both connect to `postgres:5432/urlshortener` via env vars in docker-compose
+- `read-api` no longer depends on `write-api` at startup (H2 TCP server gone); depends on `postgres` directly
+- Flyway (`flyway-core`) added to write-api; `V1__create_url_mappings.sql` creates the table + indexes on first run
+  - `short_code` UNIQUE constraint, index on `long_url` (duplicate detection), partial index on `user_id`
+  - `spring.jpa.hibernate.ddl-auto=validate` in write-api — Hibernate validates against Flyway-managed schema
+- HikariCP tuned in both services:
+  - write-api: max 10 connections, min idle 2
+  - read-api: max 20 connections, min idle 5 (heavier read load)
+- `H2ServerConfig.java` deleted — TCP server no longer needed
+- `h2` moved to `testRuntimeOnly` in both modules — H2 still used for `@SpringBootTest` (via `application-test.properties`)
+- `spring.flyway.enabled=false` added to `write-api/application-test.properties` — schema handled by H2 `create-drop` in tests
+- Test class updated: removed `@MockBean Server h2TcpServer` (class no longer exists)
 
 ---
 
@@ -161,5 +169,5 @@ gantt
         Phase 5 - E2E Tests           :done,    p5, after p4, 3d
         Phase 6 - Observability       :done,    p6, after p5, 3d
     section Scale
-        Phase 7 - PostgreSQL          :         p7, after p6, 3d
+        Phase 7 - PostgreSQL          :done,    p7, after p6, 3d
 ```

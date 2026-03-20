@@ -52,6 +52,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── PostgreSQL 16 (persistent URL store) ─────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: urlshortener
+      POSTGRES_USER: urluser
+      POSTGRES_PASSWORD: urlpass
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U urluser -d urlshortener"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Write API (Java Spring Boot, port 8080) ────────────────────────────────
   write-api:
     build:
@@ -60,17 +77,20 @@ services:
     ports:
       - "8080:8080"   # kept for direct access / debugging
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
     environment:
-      # Short URL base is now the gateway, not read-api directly
       APP_BASE_URL: http://localhost:8000
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/urlshortener
+      SPRING_DATASOURCE_USERNAME: urluser
+      SPRING_DATASOURCE_PASSWORD: urlpass
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      # OpenTelemetry — send traces/metrics/logs to SigNoz
       JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
@@ -90,14 +110,16 @@ services:
     ports:
       - "8081:8081"   # kept for direct access / debugging
     depends_on:
-      write-api:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:h2:tcp://write-api:9092/mem:urlshortener
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/urlshortener
+      SPRING_DATASOURCE_USERNAME: urluser
+      SPRING_DATASOURCE_PASSWORD: urlpass
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
@@ -243,3 +265,6 @@ services:
       - "3301:3301"
     depends_on:
       - signoz-query-service
+
+volumes:
+  postgres-data:   # persists URL data across docker-compose down/up
