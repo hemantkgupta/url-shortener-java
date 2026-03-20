@@ -107,16 +107,29 @@ This project is built incrementally. Each phase is a standalone commit that leav
 
 ---
 
-## Phase 6 — Observability 🔜
+## Phase 6 — Observability ✅
 
-**Goal**: Structured logging, metrics, and traces without SigNoz complexity.
+**Goal**: Structured logging, metrics, and distributed traces via SigNoz (OpenTelemetry-native).
 
-**Planned**:
-- Structured JSON logging (Logback + logstash-logback-encoder) in all services
-- Micrometer metrics exposed via Actuator (`/actuator/metrics`, `/actuator/prometheus`)
-- Request tracing headers (`X-Request-Id`) threaded through gateway → services
-- Prometheus scrape config in docker-compose
-- Grafana dashboard (URL creation rate, redirect p99, cache hit ratio, Kafka lag)
+**What was built**:
+- Structured JSON logging (`logstash-logback-encoder`) in all 4 services via `logback-spring.xml`
+  - Every log line is a JSON object with `service`, `level`, `message`, `timestamp`, `requestId` (MDC)
+- `X-Request-Id` tracing threaded end-to-end:
+  - Nginx generates the ID (`$request_id`) if client doesn't supply one
+  - Forwarded via `proxy_set_header X-Request-Id` to all upstreams
+  - `RequestIdFilter` (write-api, read-api, analytics-api) puts it in MDC + echoes in response header
+- OpenTelemetry Java Agent (v2.3.0) baked into all 4 Docker images
+  - Auto-instruments Spring Boot HTTP, JVM, JDBC, Redis, Kafka — zero code changes
+  - Activated via `JAVA_TOOL_OPTIONS=-javaagent:/app/opentelemetry-javaagent.jar` in docker-compose
+  - Sends traces, metrics, and logs to SigNoz via OTLP gRPC on port 4317
+- SigNoz added to docker-compose (4 new services):
+  - `clickhouse-signoz` — dedicated ClickHouse instance for telemetry storage
+  - `otel-collector` (signoz/signoz-otel-collector) — receives OTLP, writes to ClickHouse
+  - `signoz-query-service` — API backend for the SigNoz UI (port 8085)
+  - `signoz` — SigNoz web UI at **http://localhost:3301**
+- `signoz/otel-collector-config.yaml` — OTLP receivers → batch → ClickHouse exporter for traces/metrics/logs
+- Actuator Prometheus endpoint still exposed (`/actuator/prometheus`) for ad-hoc debugging
+- Micrometer service tag (`management.metrics.tags.service`) set per service
 
 ---
 
@@ -146,7 +159,7 @@ gantt
         Phase 4 - Nginx Gateway       :done,    p4, after p3, 2d
     section Quality
         Phase 5 - E2E Tests           :done,    p5, after p4, 3d
-        Phase 6 - Observability       :         p6, after p5, 3d
+        Phase 6 - Observability       :done,    p6, after p5, 3d
     section Scale
         Phase 7 - PostgreSQL          :         p7, after p6, 3d
 ```

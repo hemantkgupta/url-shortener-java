@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Reads spring.application.name so every log line carries the service name -->
+    <springProperty scope="context" name="serviceName" source="spring.application.name" defaultValue="write-api"/>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!-- Static field included in every log event -->
+            <customFields>{"service":"${serviceName}"}</customFields>
+            <!-- Include MDC fields (requestId, etc.) automatically -->
+            <includeMdcKeyName>requestId</includeMdcKeyName>
+        </encoder>
+    </appender>
+
+    <!-- Suppress noisy framework logs; our code logs at INFO -->
+    <logger name="org.springframework"             level="WARN"/>
+    <logger name="org.hibernate"                   level="WARN"/>
+    <logger name="org.apache.kafka"                level="WARN"/>
+    <logger name="com.urlshortener"                level="INFO"/>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
