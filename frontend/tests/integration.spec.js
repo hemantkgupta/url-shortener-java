@@ -18,7 +18,7 @@ test.describe('URL Shortener Integration', () => {
     // Wait for the short URL to appear (it should contain the dynamic domain)
     const resultBox = page.locator('.font-mono.text-blue-600');
     await expect(resultBox).toBeVisible();
-    await expect(resultBox).toContainText('localhost:10001');
+    await expect(resultBox).toContainText('localhost:8000');
 
     const shortUrl = await resultBox.innerText();
 

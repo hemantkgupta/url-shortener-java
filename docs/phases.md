@@ -82,18 +82,28 @@ This project is built incrementally. Each phase is a standalone commit that leav
 
 ---
 
-## Phase 5 — End-to-End Testing 🔜
+## Phase 5 — End-to-End Testing ✅
 
 **Goal**: Playwright + Spring integration tests that run against the real gateway and verify the full stack.
 
-**Planned**:
-- Playwright tests (TypeScript) against `http://localhost:8000`
-  - Shorten a URL, verify response shape
-  - Follow redirect, verify destination
-  - Check analytics table updates after redirect
-  - Verify `/my-links` auth gate
+**What was built**:
 - Spring `@SpringBootTest` integration tests for write-api and read-api
-- `test.sh` script that spins up Docker Compose, runs all tests, tears down
+  - `write-api`: 4 tests — 201 on valid URL, 400 on blank/missing URL, idempotent duplicate handling
+  - `read-api`: 4 tests — 302 with `Location` header on known code, 404 on unknown, cache-hit path
+  - Test profiles (`application-test.properties`) use embedded H2, mock Redis and Kafka via `@MockBean`
+  - H2 TCP server and Google JwtDecoder replaced with mocks so tests run fully offline
+- Playwright E2E tests (`frontend/tests/integration.spec.js`) targeting `http://localhost:8000`
+  - Shorten URL → verify response shape and short URL contains gateway host
+  - Follow redirect → verify destination URL
+  - Analytics dashboard renders table headers
+  - Custom slug creation and redirect verification
+  - `/my-links` history page (auth gate + correct ordering)
+- `test.sh` rewritten for Docker Compose:
+  - Spins up full stack, waits for gateway health
+  - Runs smoke test (shorten + redirect) via curl
+  - Runs `./gradlew :write-api:test :read-api:test`
+  - Runs `npx playwright test`
+  - Tears down with `docker-compose down` on exit
 
 ---
 
@@ -135,7 +145,7 @@ gantt
         Phase 3 - Analytics           :done,    p3, after p2, 3d
         Phase 4 - Nginx Gateway       :done,    p4, after p3, 2d
     section Quality
-        Phase 5 - E2E Tests           :active,  p5, after p4, 3d
+        Phase 5 - E2E Tests           :done,    p5, after p4, 3d
         Phase 6 - Observability       :         p6, after p5, 3d
     section Scale
         Phase 7 - PostgreSQL          :         p7, after p6, 3d
