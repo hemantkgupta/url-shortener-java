@@ -1,0 +1,208 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signoz-otel-collector-config
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch:
+        send_batch_size: 1000
+        timeout: 10s
+    exporters:
+      clickhouse/traces:
+        endpoint: tcp://signoz-clickhouse:9000/
+        database: signoz_traces
+        create_schema: true
+        timeout: 30s
+      clickhouse/metrics:
+        endpoint: tcp://signoz-clickhouse:9000/
+        database: signoz_metrics
+        create_schema: true
+        timeout: 30s
+      clickhouse/logs:
+        endpoint: tcp://signoz-clickhouse:9000/
+        database: signoz_logs
+        create_schema: true
+        timeout: 30s
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [clickhouse/traces]
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [clickhouse/metrics]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [clickhouse/logs]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signoz-clickhouse
+spec:
+  selector:
+    app: signoz-clickhouse
+  ports:
+  - name: tcp
+    port: 9000
+  - name: http
+    port: 8123
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signoz-clickhouse
+spec:
+  selector:
+    matchLabels:
+      app: signoz-clickhouse
+  template:
+    metadata:
+      labels:
+        app: signoz-clickhouse
+    spec:
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:23.8
+        ports:
+        - containerPort: 9000
+        - containerPort: 8123
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signoz-query-service
+spec:
+  selector:
+    app: signoz-query-service
+  ports:
+  - name: http
+    port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signoz-query-service
+spec:
+  selector:
+    matchLabels:
+      app: signoz-query-service
+  template:
+    metadata:
+      labels:
+        app: signoz-query-service
+    spec:
+      containers:
+      - name: query-service
+        image: signoz/query-service:latest
+        env:
+        - name: ClickHouseUrl
+          value: "tcp://signoz-clickhouse:9000"
+        - name: STORAGE
+          value: "clickhouse"
+        - name: SIGNOZ_LOCAL_DB_PATH
+          value: "/tmp/signoz.db"
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signoz-frontend
+spec:
+  selector:
+    app: signoz-frontend
+  ports:
+  - name: http
+    port: 3301
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signoz-frontend
+spec:
+  selector:
+    matchLabels:
+      app: signoz-frontend
+  template:
+    metadata:
+      labels:
+        app: signoz-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: signoz/frontend:latest
+        env:
+        - name: BACKEND_API_URL
+          value: "http://signoz-query-service:8080"
+        ports:
+        - containerPort: 3301
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signoz-otel-collector
+spec:
+  selector:
+    app: signoz-otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+  - name: otlp-http
+    port: 4318
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signoz-otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: signoz-otel-collector
+  template:
+    metadata:
+      labels:
+        app: signoz-otel-collector
+    spec:
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:latest
+        command:
+        - "/otelcol-contrib"
+        - "--config=/etc/otel-collector-config.yaml"
+        ports:
+        - containerPort: 4317
+        - containerPort: 4318
+        volumeMounts:
+        - name: otel-collector-config
+          mountPath: /etc/otel-collector-config.yaml
+          subPath: otel-collector-config.yaml
+      volumes:
+      - name: otel-collector-config
+        configMap:
+          name: signoz-otel-collector-config

@@ -1,0 +1,5 @@
+rootProject.name = 'url-shortener'
+include 'write-api'
+include 'read-api'
+include 'analytics-worker'
+include 'analytics-api'

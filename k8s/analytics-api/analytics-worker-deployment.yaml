@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-worker
+  labels:
+    app: analytics-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analytics-worker
+  template:
+    metadata:
+      labels:
+        app: analytics-worker
+    spec:
+      containers:
+      - name: analytics-worker
+        image: analytics-worker:latest
+        imagePullPolicy: Never
+        env:
+        - name: CLICKHOUSE_ADDR
+          value: "clickhouse:9000"
+        - name: CLICKHOUSE_USER
+          value: "default"
+        - name: CLICKHOUSE_PASSWORD
+          value: "password"
+        - name: KAFKA_BROKERS
+          value: "kafka:9092"
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"

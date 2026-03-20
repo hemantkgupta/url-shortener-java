@@ -1,0 +1,155 @@
+version: '3.9'
+
+services:
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Kafka (KRaft mode — no Zookeeper) ─────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    ports:
+      - "9094:9094"   # external (host) listener
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ── ClickHouse (analytics store) ──────────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    ports:
+      - "8123:8123"   # HTTP interface
+      - "9000:9000"   # native TCP interface
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Write API (Java Spring Boot, port 8080) ────────────────────────────────
+  write-api:
+    build:
+      context: .
+      dockerfile: write-api/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      APP_BASE_URL: http://localhost:8081
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Read API (Java Spring Boot, port 8081) ─────────────────────────────────
+  read-api:
+    build:
+      context: .
+      dockerfile: read-api/Dockerfile
+    ports:
+      - "8081:8081"
+    depends_on:
+      write-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:h2:tcp://write-api:9092/mem:urlshortener
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Analytics Worker (Kafka consumer → ClickHouse, port 8082) ─────────────
+  analytics-worker:
+    build:
+      context: .
+      dockerfile: analytics-worker/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      APP_CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/analytics
+      APP_CLICKHOUSE_USERNAME: default
+      APP_CLICKHOUSE_PASSWORD: ""
+
+  # ── Analytics API (ClickHouse queries, port 8083) ─────────────────────────
+  analytics-api:
+    build:
+      context: .
+      dockerfile: analytics-api/Dockerfile
+    ports:
+      - "8083:8083"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      APP_CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/analytics
+      APP_CLICKHOUSE_USERNAME: default
+      APP_CLICKHOUSE_PASSWORD: ""
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Frontend (React/Vite via Nginx, port 3000) ─────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_WRITE_API_URL: http://localhost:8080
+        VITE_SHORT_LINK_BASE_URL: http://localhost:8081
+    ports:
+      - "3000:80"
+    depends_on:
+      write-api:
+        condition: service_healthy
+      read-api:
+        condition: service_healthy
+      analytics-api:
+        condition: service_healthy
