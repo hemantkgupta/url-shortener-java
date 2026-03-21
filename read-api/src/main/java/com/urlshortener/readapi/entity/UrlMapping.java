@@ -22,4 +22,8 @@ public class UrlMapping {
 
     @Column(nullable = false)
     private LocalDateTime createdAt;
+
+    // NULL means the mapping never expires
+    @Column
+    private LocalDateTime expiresAt;
 }

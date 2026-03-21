@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 
 @Slf4j
 @Service
@@ -40,21 +41,31 @@ public class UrlShortenServiceImpl implements UrlShortenService {
         String cachedCode = redis.opsForValue().get(REDIS_PREFIX + request.getLongUrl());
         if (cachedCode != null) {
             log.debug("Cache hit for longUrl, returning existing code '{}'", cachedCode);
-            return buildResponse(cachedCode, request.getLongUrl());
+            // expiresAt omitted on cache-hit path — avoid extra DB round-trip
+            return ShortenResponse.builder()
+                    .shortCode(cachedCode)
+                    .shortUrl(baseUrl + "/" + cachedCode)
+                    .longUrl(request.getLongUrl())
+                    .build();
         }
 
         // 2. Check DB — CDC will eventually warm the cache; no inline SET here
         return repository.findByLongUrl(request.getLongUrl())
                 .map(this::toResponse)
-                .orElseGet(() -> createNew(request.getLongUrl(), userId));
+                .orElseGet(() -> createNew(request.getLongUrl(), userId, request.getTtlSeconds()));
     }
 
-    private ShortenResponse createNew(String longUrl, String userId) {
+    private ShortenResponse createNew(String longUrl, String userId, Long ttlSeconds) {
+        LocalDateTime expiresAt = ttlSeconds != null
+                ? LocalDateTime.now().plusSeconds(ttlSeconds)
+                : null;
+
         UrlMapping saved = repository.save(
                 UrlMapping.builder()
                         .longUrl(longUrl)
                         .shortCode("__placeholder__")
                         .userId(userId)
+                        .expiresAt(expiresAt)
                         .build()
         );
 
@@ -81,14 +92,12 @@ public class UrlShortenServiceImpl implements UrlShortenService {
     }
 
     private ShortenResponse toResponse(UrlMapping mapping) {
-        return buildResponse(mapping.getShortCode(), mapping.getLongUrl());
-    }
-
-    private ShortenResponse buildResponse(String shortCode, String longUrl) {
         return ShortenResponse.builder()
-                .shortCode(shortCode)
-                .shortUrl(baseUrl + "/" + shortCode)
-                .longUrl(longUrl)
+                .shortCode(mapping.getShortCode())
+                .shortUrl(baseUrl + "/" + mapping.getShortCode())
+                .longUrl(mapping.getLongUrl())
+                .createdAt(mapping.getCreatedAt())
+                .expiresAt(mapping.getExpiresAt())
                 .build();
     }
 }
