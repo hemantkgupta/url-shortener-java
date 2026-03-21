@@ -21,13 +21,17 @@ static_resources:
             - name: read_api
               domains: ["*"]
               routes:
-              # Validate short code format: alphanumeric, hyphen, underscore only
+              # Validate short code format before rate limiting — malformed requests
+              # are rejected immediately without consuming a rate limit token.
               - match:
                   safe_regex:
                     regex: "^/[a-zA-Z0-9_-]+$"
                 route:
                   cluster: read_api_service
-              # Reject anything else
+                rate_limits:
+                - actions:
+                  - remote_address: {}
+              # Reject malformed short codes (400) — no rate limit action
               - match:
                   prefix: "/"
                 direct_response:
@@ -35,13 +39,14 @@ static_resources:
                   body:
                     inline_string: '{"error":"invalid short code format"}'
           http_filters:
+          # ── Layer 1: Local rate limit ────────────────────────────────────────
           - name: envoy.filters.http.local_ratelimit
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
-              stat_prefix: read_rate_limiter
+              stat_prefix: read_local_rate_limiter
               token_bucket:
-                max_tokens: 1000
-                tokens_per_fill: 1000
+                max_tokens: 2000        # allow burst locally
+                tokens_per_fill: 2000
                 fill_interval: 1s
               filter_enabled:
                 default_value:
@@ -51,11 +56,19 @@ static_resources:
                 default_value:
                   numerator: 100
                   denominator: HUNDRED
-              response_headers_to_add:
-              - header:
-                  key: x-rate-limited
-                  value: 'true'
-                keep_empty_value: true
+
+          # ── Layer 2: Global rate limit (Redis sliding window via RLS) ────────
+          - name: envoy.filters.http.ratelimit
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+              domain: read
+              failure_mode_deny: false    # fail-open if RLS is unavailable
+              rate_limit_service:
+                grpc_service:
+                  envoy_grpc:
+                    cluster_name: rls_cluster
+                transport_api_version: V3
+
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -75,3 +88,24 @@ static_resources:
               socket_address:
                 address: read-api
                 port_value: 8081
+
+  # RLS cluster — HTTP/2 required for gRPC
+  - name: rls_cluster
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    dns_lookup_family: V4_ONLY
+    lb_policy: ROUND_ROBIN
+    typed_extension_protocol_options:
+      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+        "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+        explicit_http_config:
+          http2_protocol_options: {}
+    load_assignment:
+      cluster_name: rls_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: rls-service
+                port_value: 9090

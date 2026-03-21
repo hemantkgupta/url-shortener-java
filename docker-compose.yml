@@ -215,6 +215,30 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Rate Limit Service (gRPC :9090, HTTP actuator :8091) ─────────────────
+  rls-service:
+    build:
+      context: .
+      dockerfile: rls-service/Dockerfile
+    ports:
+      - "8091:8091"   # actuator (health, metrics)
+      - "9090:9090"   # gRPC — Envoy connects here
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      RLS_WRITE_LIMIT: 100
+      RLS_WRITE_WINDOW_MS: 60000
+      RLS_READ_LIMIT: 1000
+      RLS_READ_WINDOW_MS: 60000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Frontend (React/Vite via Nginx, port 3000 internal only) ───────────────
   frontend:
     build:
@@ -240,6 +264,8 @@ services:
     depends_on:
       write-api:
         condition: service_healthy
+      rls-service:
+        condition: service_healthy
 
   # ── Envoy — Read API proxy (rate limit: 1000 RPS, short-code validation) ──
   envoy-read:
@@ -251,6 +277,8 @@ services:
       - "10001:10001"
     depends_on:
       read-api:
+        condition: service_healthy
+      rls-service:
         condition: service_healthy
 
   # ── Nginx API Gateway (single entry point, port 8000) ─────────────────────
