@@ -1,0 +1,51 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+// Flink jobs are standalone fat JARs, not Spring Boot apps
+configurations {
+    flinkProvided
+    compileOnly.extendsFrom(flinkProvided)
+}
+
+ext {
+    flinkVersion = '1.18.1'
+}
+
+dependencies {
+    // Flink core (provided by cluster at runtime)
+    flinkProvided "org.apache.flink:flink-streaming-java:${flinkVersion}"
+    flinkProvided "org.apache.flink:flink-clients:${flinkVersion}"
+
+    // Kafka connector (bundled into the fat JAR)
+    implementation "org.apache.flink:flink-connector-kafka:3.1.0-1.18"
+
+    // ClickHouse JDBC (bundled)
+    implementation 'com.clickhouse:clickhouse-jdbc:0.6.5'
+    implementation 'org.apache.httpcomponents.client5:httpclient5:5.3.1'
+
+    // JSON deserialization
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.0'
+    implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.0'
+
+    // Logging
+    implementation 'org.slf4j:slf4j-api:2.0.12'
+    implementation 'ch.qos.logback:logback-classic:1.5.3'
+}
+
+shadowJar {
+    archiveBaseName.set('flink-job')
+    archiveClassifier.set('')
+    archiveVersion.set('')
+    configurations = [project.configurations.runtimeClasspath]
+    manifest {
+        attributes 'Main-Class': 'com.urlshortener.flink.UrlAnalyticsJob'
+    }
+    // Merge service files to avoid conflicts
+    mergeServiceFiles()
+}
+
+// Exclude flinkProvided from the fat JAR
+shadowJar.dependsOn(jar)
+jar.finalizedBy(shadowJar)

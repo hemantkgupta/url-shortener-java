@@ -4,7 +4,7 @@ services:
 
   # ── Redis ──────────────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack-server:7.2.0-v10
     ports:
       - "6379:6379"
     healthcheck:
@@ -57,6 +57,12 @@ services:
     image: postgres:16-alpine
     ports:
       - "5432:5432"
+    # Enable logical replication for Debezium CDC
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_replication_slots=5
+      -c max_wal_senders=5
     environment:
       POSTGRES_DB: urlshortener
       POSTGRES_USER: urluser
@@ -155,6 +161,35 @@ services:
       OTEL_SERVICE_NAME: analytics-worker
       OTEL_LOGS_EXPORTER: otlp
 
+  # ── CDC Worker (PostgreSQL WAL → Redis cache warm + Kafka) ───────────────
+  cdc-worker:
+    build:
+      context: .
+      dockerfile: cdc-worker/Dockerfile
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: urlshortener
+      POSTGRES_USER: urluser
+      POSTGRES_PASSWORD: urlpass
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_SERVICE_NAME: cdc-worker
+      OTEL_LOGS_EXPORTER: otlp
+
   # ── Analytics API (ClickHouse queries, port 8083) ─────────────────────────
   analytics-api:
     build:
@@ -194,6 +229,30 @@ services:
       analytics-api:
         condition: service_healthy
 
+  # ── Envoy — Write API proxy (rate limit: 100 RPS) ─────────────────────────
+  envoy-write:
+    image: envoyproxy/envoy:v1.29-latest
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+    volumes:
+      - ./envoy/envoy-write.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "10000:10000"
+    depends_on:
+      write-api:
+        condition: service_healthy
+
+  # ── Envoy — Read API proxy (rate limit: 1000 RPS, short-code validation) ──
+  envoy-read:
+    image: envoyproxy/envoy:v1.29-latest
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+    volumes:
+      - ./envoy/envoy-read.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "10001:10001"
+    depends_on:
+      read-api:
+        condition: service_healthy
+
   # ── Nginx API Gateway (single entry point, port 8000) ─────────────────────
   gateway:
     build:
@@ -211,6 +270,63 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ── Flink — JobManager (cluster coordinator, Web UI at :8082) ─────────────
+  flink-jobmanager:
+    image: flink:1.18-java17
+    command: jobmanager
+    ports:
+      - "8082:8081"   # Flink Web UI (8082 externally to avoid conflict)
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        state.backend: hashmap
+        jobmanager.memory.process.size: 1024m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Flink — TaskManager (executes job tasks) ───────────────────────────────
+  flink-taskmanager:
+    image: flink:1.18-java17
+    command: taskmanager
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        taskmanager.memory.process.size: 1024m
+
+  # ── Flink — Job Submitter (builds fat JAR and submits to cluster) ──────────
+  flink-job-submitter:
+    build:
+      context: .
+      dockerfile: flink-job/Dockerfile
+    command: >
+      /bin/bash -c "
+        echo 'Waiting for Flink cluster...' &&
+        sleep 15 &&
+        /opt/flink/bin/flink run
+          --jobmanager flink-jobmanager:8081
+          /opt/flink-job/flink-job.jar
+      "
+    depends_on:
+      flink-taskmanager:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      CLICKHOUSE_URL: jdbc:clickhouse://clickhouse:8123/analytics?compress=0
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
 
   # ── SigNoz — dedicated ClickHouse for telemetry (traces, metrics, logs) ────
   clickhouse-signoz:

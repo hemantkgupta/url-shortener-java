@@ -26,6 +26,7 @@ public class UrlShortenServiceImpl implements UrlShortenService {
     private final UrlCodec urlCodec;
     private final StringRedisTemplate redis;
     private final KafkaTemplate<String, UrlCreatedEvent> kafkaTemplate;
+    private final BloomFilterService bloomFilter;
 
     @Value("${app.base-url:http://localhost:8081}")
     private String baseUrl;
@@ -69,6 +70,7 @@ public class UrlShortenServiceImpl implements UrlShortenService {
         saved = repository.save(saved);
 
         cacheMapping(shortCode, longUrl);
+        bloomFilter.add(shortCode);
         publishCreatedEvent(shortCode, longUrl, userId);
 
         log.info("Created short code '{}' for URL: {} (user: {})", shortCode, longUrl, userId);

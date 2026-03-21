@@ -22,6 +22,7 @@ public class RedirectService {
     private final UrlMappingRepository repository;
     private final StringRedisTemplate redis;
     private final KafkaTemplate<String, UrlClickedEvent> kafkaTemplate;
+    private final BloomFilterService bloomFilter;
 
     @Value("${app.redis.url-ttl-seconds:86400}")
     private long urlTtlSeconds;
@@ -31,6 +32,12 @@ public class RedirectService {
 
     @Transactional(readOnly = true)
     public String resolve(String shortCode) {
+        // 0. Bloom filter — reject definitely-unknown codes without touching DB
+        if (!bloomFilter.mightExist(shortCode)) {
+            log.debug("Bloom filter miss for '{}' — fast 404", shortCode);
+            throw new ShortCodeNotFoundException(shortCode);
+        }
+
         // 1. Redis cache — fast path, no DB needed
         String cached = redis.opsForValue().get(REDIS_PREFIX + shortCode);
         if (cached != null) {
