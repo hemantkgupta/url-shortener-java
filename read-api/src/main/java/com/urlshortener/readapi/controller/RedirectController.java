@@ -15,12 +15,12 @@ public class RedirectController {
     private final RedirectService redirectService;
 
     /**
-     * Resolves a short code and issues an HTTP 301 (permanent) redirect to the original URL.
+     * Resolves a short code and issues an HTTP 302 redirect to the original URL.
      */
     @GetMapping("/{shortCode}")
     public ResponseEntity<Void> redirect(@PathVariable String shortCode) {
         String longUrl = redirectService.resolve(shortCode);
-        return ResponseEntity.status(HttpStatus.MOVED_PERMANENTLY)
+        return ResponseEntity.status(HttpStatus.FOUND)
                 .location(URI.create(longUrl))
                 .build();
     }
