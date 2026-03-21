@@ -14,7 +14,6 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.Instant;
 
 @Slf4j
@@ -26,12 +25,10 @@ public class UrlShortenServiceImpl implements UrlShortenService {
     private final UrlCodec urlCodec;
     private final StringRedisTemplate redis;
     private final KafkaTemplate<String, UrlCreatedEvent> kafkaTemplate;
+    private final BloomFilterService bloomFilter;
 
     @Value("${app.base-url:http://localhost:8081}")
     private String baseUrl;
-
-    @Value("${app.redis.url-ttl-seconds:86400}")
-    private long urlTtlSeconds;
 
     private static final String TOPIC_URL_CREATED = "url.created";
     private static final String REDIS_PREFIX = "url:";
@@ -46,12 +43,9 @@ public class UrlShortenServiceImpl implements UrlShortenService {
             return buildResponse(cachedCode, request.getLongUrl());
         }
 
-        // 2. Check DB
+        // 2. Check DB — CDC will eventually warm the cache; no inline SET here
         return repository.findByLongUrl(request.getLongUrl())
-                .map(existing -> {
-                    cacheMapping(existing.getShortCode(), existing.getLongUrl());
-                    return toResponse(existing);
-                })
+                .map(this::toResponse)
                 .orElseGet(() -> createNew(request.getLongUrl(), userId));
     }
 
@@ -68,17 +62,12 @@ public class UrlShortenServiceImpl implements UrlShortenService {
         saved.setShortCode(shortCode);
         saved = repository.save(saved);
 
-        cacheMapping(shortCode, longUrl);
+        // Cache warming is CDC's responsibility — only register in Bloom filter immediately
+        bloomFilter.add(shortCode);
         publishCreatedEvent(shortCode, longUrl, userId);
 
         log.info("Created short code '{}' for URL: {} (user: {})", shortCode, longUrl, userId);
         return toResponse(saved);
-    }
-
-    private void cacheMapping(String shortCode, String longUrl) {
-        Duration ttl = Duration.ofSeconds(urlTtlSeconds);
-        redis.opsForValue().set(REDIS_PREFIX + shortCode, longUrl, ttl);
-        redis.opsForValue().set(REDIS_PREFIX + longUrl, shortCode, ttl);
     }
 
     private void publishCreatedEvent(String shortCode, String longUrl, String userId) {

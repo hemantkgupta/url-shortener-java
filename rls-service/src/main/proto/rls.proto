@@ -1,0 +1,48 @@
+// Simplified Envoy Rate Limit Service proto (v3 compatible).
+// Envoy's ratelimit filter calls ShouldRateLimit() for every request
+// and expects this exact wire format.
+
+syntax = "proto3";
+
+package envoy.service.ratelimit.v3;
+
+option java_package = "com.urlshortener.rls.proto";
+option java_outer_classname = "RlsProto";
+option java_multiple_files = true;
+
+service RateLimitService {
+  rpc ShouldRateLimit(RateLimitRequest) returns (RateLimitResponse) {}
+}
+
+// Envoy sends the domain + a list of descriptors (key-value pairs).
+// Example: domain="write", descriptors=[{key="remote_address", value="1.2.3.4"}]
+message RateLimitRequest {
+  string domain = 1;
+  repeated RateLimitDescriptor descriptors = 2;
+  uint32 hits_addend = 3;
+}
+
+message RateLimitDescriptor {
+  repeated Entry entries = 1;
+
+  message Entry {
+    string key = 1;
+    string value = 2;
+  }
+}
+
+message RateLimitResponse {
+  enum Code {
+    UNKNOWN = 0;
+    OK = 1;
+    OVER_LIMIT = 2;
+  }
+
+  Code overall_code = 1;
+  repeated DescriptorStatus statuses = 2;
+
+  message DescriptorStatus {
+    Code code = 1;
+    uint32 limit_remaining = 3;
+  }
+}

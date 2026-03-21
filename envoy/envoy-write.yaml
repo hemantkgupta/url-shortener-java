@@ -1,0 +1,108 @@
+static_resources:
+  listeners:
+  - name: listener_write
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 10000
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_write
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+          route_config:
+            name: write_route
+            virtual_hosts:
+            - name: write_api
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: write_api_service
+                # Tell Envoy which descriptor to send to the RLS for this route.
+                # remote_address = the client IP — used as the rate limit key.
+                rate_limits:
+                - actions:
+                  - remote_address: {}
+          http_filters:
+          # ── Layer 1: Local rate limit (in-process, zero network cost) ───────
+          # First defense against per-instance burst. Each Envoy pod enforces
+          # this independently — it's a rough guard, not the true global limit.
+          - name: envoy.filters.http.local_ratelimit
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+              stat_prefix: write_local_rate_limiter
+              token_bucket:
+                max_tokens: 200         # allow burst up to 200 locally
+                tokens_per_fill: 200
+                fill_interval: 1s
+              filter_enabled:
+                default_value:
+                  numerator: 100
+                  denominator: HUNDRED
+              filter_enforced:
+                default_value:
+                  numerator: 100
+                  denominator: HUNDRED
+
+          # ── Layer 2: Global rate limit (shared Redis sliding window via RLS) ─
+          # Calls the Rate Limit Service over gRPC. RLS checks a Redis ZSET:
+          # key = rl:write:{client_ip}, window = 60s, limit = 100 req/window.
+          # All Envoy instances share the same Redis counter → true global limit.
+          - name: envoy.filters.http.ratelimit
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+              domain: write
+              failure_mode_deny: false    # fail-open if RLS is unavailable
+              rate_limit_service:
+                grpc_service:
+                  envoy_grpc:
+                    cluster_name: rls_cluster
+                transport_api_version: V3
+
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+  - name: write_api_service
+    connect_timeout: 5s
+    type: STRICT_DNS
+    dns_lookup_family: V4_ONLY
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: write_api_service
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: write-api
+                port_value: 8080
+
+  # RLS cluster — must use HTTP/2 because gRPC runs over HTTP/2
+  - name: rls_cluster
+    connect_timeout: 0.25s
+    type: STRICT_DNS
+    dns_lookup_family: V4_ONLY
+    lb_policy: ROUND_ROBIN
+    typed_extension_protocol_options:
+      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+        "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+        explicit_http_config:
+          http2_protocol_options: {}
+    load_assignment:
+      cluster_name: rls_cluster
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: rls-service
+                port_value: 9090
