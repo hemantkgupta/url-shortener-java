@@ -45,7 +45,7 @@ public class DualBufferKeyGenService implements KeyGenService {
     private final JdbcTemplate jdbc;
     private final UrlCodec codec;
 
-    @Value("${app.key-gen.dual-buffer.block-size:1000}")
+    @Value("${app.key-gen.dual-buffer.block-size:10000}")
     private int blockSize;
 
     @Value("${app.key-gen.dual-buffer.prefetch-threshold:0.8}")
