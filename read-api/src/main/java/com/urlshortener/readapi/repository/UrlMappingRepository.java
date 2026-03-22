@@ -2,11 +2,20 @@ package com.urlshortener.readapi.repository;
 
 import com.urlshortener.readapi.entity.UrlMapping;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 @Repository
 public interface UrlMappingRepository extends JpaRepository<UrlMapping, Long> {
-    Optional<UrlMapping> findByShortCode(String shortCode);
+
+    // Only returns the mapping if it has not yet expired.
+    // expires_at IS NULL means never-expiring — always included.
+    @Query("SELECT m FROM UrlMapping m WHERE m.shortCode = :shortCode " +
+           "AND (m.expiresAt IS NULL OR m.expiresAt > :now)")
+    Optional<UrlMapping> findActiveByShortCode(@Param("shortCode") String shortCode,
+                                               @Param("now") LocalDateTime now);
 }

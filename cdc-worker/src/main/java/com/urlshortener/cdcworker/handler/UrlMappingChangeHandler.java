@@ -12,6 +12,8 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,8 +72,31 @@ public class UrlMappingChangeHandler implements DebeziumEngine.ChangeConsumer<Ch
 
         if (shortCode == null || longUrl == null) return;
 
-        // Warm Redis cache — both directions
+        // Compute Redis TTL: if the URL has an expiry, use the remaining duration
+        // so the cache entry naturally expires at the same time as the DB row.
+        // Debezium emits TIMESTAMP columns as microseconds-since-epoch (Long).
         Duration ttl = Duration.ofSeconds(TTL_SECONDS);
+        org.apache.kafka.connect.data.Field expiresAtField = after.schema().field("expires_at");
+        if (expiresAtField != null) {
+            Object expiresAtRaw = after.get("expires_at");
+            if (expiresAtRaw instanceof Long expiresAtMicros) {
+                LocalDateTime expiresAt = LocalDateTime.ofEpochSecond(
+                        expiresAtMicros / 1_000_000L,
+                        (int) ((expiresAtMicros % 1_000_000L) * 1_000L),
+                        ZoneOffset.UTC);
+                Duration remaining = Duration.between(LocalDateTime.now(ZoneOffset.UTC), expiresAt);
+                if (!remaining.isPositive()) {
+                    // Already expired at the moment of CDC event — skip caching
+                    log.info("CDC: skipping cache for already-expired code '{}'", shortCode);
+                    return;
+                }
+                ttl = remaining.compareTo(Duration.ofSeconds(TTL_SECONDS)) < 0
+                        ? remaining
+                        : Duration.ofSeconds(TTL_SECONDS);
+            }
+        }
+
+        // Warm Redis cache — both directions
         redis.opsForValue().set(REDIS_PREFIX + shortCode, longUrl, ttl);
         redis.opsForValue().set(REDIS_PREFIX + longUrl, shortCode, ttl);
 

@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 
 @Slf4j
 @Service
@@ -46,14 +47,19 @@ public class RedirectService {
             return cached;
         }
 
-        // 2. DB fallback (fail-open: return URL even if analytics fails)
-        return repository.findByShortCode(shortCode)
+        // 2. DB fallback — only returns non-expired mappings
+        LocalDateTime now = LocalDateTime.now();
+        return repository.findActiveByShortCode(shortCode, now)
                 .map(mapping -> {
                     String longUrl = mapping.getLongUrl();
 
-                    // Warm the cache for future hits
-                    redis.opsForValue().set(REDIS_PREFIX + shortCode, longUrl,
-                            Duration.ofSeconds(urlTtlSeconds));
+                    // Use remaining TTL when the URL has an expiry, so the Redis entry
+                    // naturally expires at the same time as the DB record.
+                    Duration redisTtl = mapping.getExpiresAt() != null
+                            ? Duration.between(now, mapping.getExpiresAt())
+                            : Duration.ofSeconds(urlTtlSeconds);
+
+                    redis.opsForValue().set(REDIS_PREFIX + shortCode, longUrl, redisTtl);
 
                     publishClickEvent(shortCode, longUrl);
                     log.info("DB lookup: '{}' -> {}", shortCode, longUrl);
