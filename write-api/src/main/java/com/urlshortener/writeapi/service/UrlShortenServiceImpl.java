@@ -1,11 +1,11 @@
 package com.urlshortener.writeapi.service;
 
+import com.urlshortener.writeapi.client.KeyGenClient;
 import com.urlshortener.writeapi.dto.ShortenRequest;
 import com.urlshortener.writeapi.dto.ShortenResponse;
 import com.urlshortener.writeapi.entity.UrlMapping;
 import com.urlshortener.writeapi.event.UrlCreatedEvent;
 import com.urlshortener.writeapi.repository.UrlMappingRepository;
-import com.urlshortener.writeapi.util.UrlCodec;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,7 +23,7 @@ import java.time.LocalDateTime;
 public class UrlShortenServiceImpl implements UrlShortenService {
 
     private final UrlMappingRepository repository;
-    private final UrlCodec urlCodec;
+    private final KeyGenClient keyGenClient;   // replaces UrlCodec + placeholder-save pattern
     private final StringRedisTemplate redis;
     private final KafkaTemplate<String, UrlCreatedEvent> kafkaTemplate;
     private final BloomFilterService bloomFilter;
@@ -32,7 +32,7 @@ public class UrlShortenServiceImpl implements UrlShortenService {
     private String baseUrl;
 
     private static final String TOPIC_URL_CREATED = "url.created";
-    private static final String REDIS_PREFIX = "url:";
+    private static final String REDIS_PREFIX       = "url:";
 
     @Override
     @Transactional
@@ -60,18 +60,19 @@ public class UrlShortenServiceImpl implements UrlShortenService {
                 ? LocalDateTime.now().plusSeconds(ttlSeconds)
                 : null;
 
+        // Obtain a unique short code from the key-gen-service.
+        // The key-gen-service guarantees uniqueness (sequential blocks / Snowflake),
+        // so a single INSERT is enough — no placeholder-then-update needed.
+        String shortCode = keyGenClient.nextCode();
+
         UrlMapping saved = repository.save(
                 UrlMapping.builder()
                         .longUrl(longUrl)
-                        .shortCode("__placeholder__")
+                        .shortCode(shortCode)
                         .userId(userId)
                         .expiresAt(expiresAt)
                         .build()
         );
-
-        String shortCode = urlCodec.encode(saved.getId());
-        saved.setShortCode(shortCode);
-        saved = repository.save(saved);
 
         // Cache warming is CDC's responsibility — only register in Bloom filter immediately
         bloomFilter.add(shortCode);

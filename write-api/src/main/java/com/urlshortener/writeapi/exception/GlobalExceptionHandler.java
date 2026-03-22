@@ -1,5 +1,6 @@
 package com.urlshortener.writeapi.exception;
 
+import com.urlshortener.writeapi.client.KeyGenClient;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -24,6 +25,15 @@ public class GlobalExceptionHandler {
 
         return ResponseEntity.badRequest().body(errorBody(
                 HttpStatus.BAD_REQUEST, errors, request.getRequestURI()));
+    }
+
+    @ExceptionHandler(KeyGenClient.KeyGenUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleKeyGenUnavailable(
+            KeyGenClient.KeyGenUnavailableException ex, HttpServletRequest request) {
+
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(errorBody(
+                HttpStatus.SERVICE_UNAVAILABLE, "Key generation service unavailable — try again shortly",
+                request.getRequestURI()));
     }
 
     @ExceptionHandler(Exception.class)

@@ -13,6 +13,21 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── etcd (worker-ID registry for Snowflake key gen) ───────────────────────
+  etcd:
+    image: bitnami/etcd:3.5
+    environment:
+      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
+      ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+    ports:
+      - "2379:2379"
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Kafka (KRaft mode — no Zookeeper) ─────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.6.1
@@ -76,6 +91,35 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Key Generation Service (port 8085) ────────────────────────────────────
+  key-gen-service:
+    build:
+      context: .
+      dockerfile: key-gen-service/Dockerfile
+    ports:
+      - "8085:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+    environment:
+      APP_KEY_GEN_STRATEGY: DUAL_BUFFER   # override to SNOWFLAKE to enable Snowflake IDs
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/urlshortener
+      SPRING_DATASOURCE_USERNAME: urluser
+      SPRING_DATASOURCE_PASSWORD: urlpass
+      APP_KEY_GEN_ETCD_ENDPOINTS: http://etcd:2379
+      JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_SERVICE_NAME: key-gen-service
+      OTEL_LOGS_EXPORTER: otlp
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Write API (Java Spring Boot, port 8080) ────────────────────────────────
   write-api:
     build:
@@ -90,8 +134,11 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      key-gen-service:
+        condition: service_healthy
     environment:
       APP_BASE_URL: http://localhost:8000
+      APP_KEY_GEN_URL: http://key-gen-service:8085
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/urlshortener
       SPRING_DATASOURCE_USERNAME: urluser
       SPRING_DATASOURCE_PASSWORD: urlpass
