@@ -1,14 +1,11 @@
-FROM eclipse-temurin:17 AS build
-WORKDIR /app
+FROM gradle:8.7-jdk17 AS build
+WORKDIR /build
 
-COPY gradlew gradlew.bat settings.gradle build.gradle ./
-COPY gradle/ gradle/
-COPY key-gen-service/build.gradle key-gen-service/
+COPY key-gen-service/settings.gradle settings.gradle
+COPY key-gen-service/build.gradle build.gradle
 
-RUN chmod +x gradlew && ./gradlew :key-gen-service:dependencies --no-daemon -q 2>/dev/null || true
-
-COPY key-gen-service/src key-gen-service/src
-RUN ./gradlew :key-gen-service:bootJar --no-daemon -x test
+COPY key-gen-service/src src
+RUN gradle bootJar --no-daemon -x test
 
 FROM alpine:3.19 AS otel-agent
 RUN apk add --no-cache curl && \
@@ -17,7 +14,7 @@ RUN apk add --no-cache curl && \
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-COPY --from=build /app/key-gen-service/build/libs/*.jar app.jar
+COPY --from=build /build/build/libs/*.jar app.jar
 COPY --from=otel-agent /opentelemetry-javaagent.jar opentelemetry-javaagent.jar
 EXPOSE 8085
 ENTRYPOINT ["java", "-jar", "app.jar"]

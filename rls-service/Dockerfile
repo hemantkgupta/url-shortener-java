@@ -3,17 +3,14 @@ WORKDIR /build
 
 COPY build.gradle settings.gradle ./
 COPY gradle ./gradle
-COPY gradlew ./
 
 COPY rls-service/build.gradle ./rls-service/
 COPY rls-service/src ./rls-service/src
 
-RUN ./gradlew :rls-service:bootJar --no-daemon -x test
+RUN gradle :rls-service:bootJar --no-daemon -x test
 
-FROM eclipse-temurin:17-jre-alpine
+FROM eclipse-temurin:17-jre
 WORKDIR /app
-
-RUN apk add --no-cache curl
 
 COPY --from=build /build/rls-service/build/libs/*.jar app.jar
 

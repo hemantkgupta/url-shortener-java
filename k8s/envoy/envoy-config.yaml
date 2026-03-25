@@ -35,11 +35,15 @@ data:
                     expose_headers: grpc-status,grpc-message
                   routes:
                   - match:
-                      prefix: "/api/v1/user/history"
+                      prefix: "/api/v1/history"
                     route:
                       cluster: analytics_api_service
                   - match:
                       prefix: "/api/v1/analytics"
+                    route:
+                      cluster: analytics_api_service
+                  - match:
+                      prefix: "/api/v1/user/history"
                     route:
                       cluster: analytics_api_service
                   - match:
@@ -60,12 +64,10 @@ data:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
                   providers:
                     google_identity_provider:
-                      issuer: "https://securetoken.google.com/gen-lang-client-0131917105"
-                      audiences:
-                        - "gen-lang-client-0131917105"
+                      issuer: "https://accounts.google.com"
                       remote_jwks:
                         http_uri:
-                          uri: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
+                          uri: "https://www.googleapis.com/oauth2/v3/certs"
                           cluster: google_jwks_cluster
                           timeout: 5s
                         cache_duration: 3600s
@@ -74,11 +76,11 @@ data:
                           claim_name: "sub"
                   rules:
                     - match:
-                        prefix: "/api/v1/user/history"
+                        prefix: "/api/v1/history"
                       requires:
                         provider_name: google_identity_provider
                     - match:
-                        prefix: "/api/v1/history"
+                        prefix: "/api/v1/user/history"
                       requires:
                         provider_name: google_identity_provider
                     - match:

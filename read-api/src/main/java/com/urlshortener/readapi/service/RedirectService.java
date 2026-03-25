@@ -53,8 +53,6 @@ public class RedirectService {
                 .map(mapping -> {
                     String longUrl = mapping.getLongUrl();
 
-                    // Use remaining TTL when the URL has an expiry, so the Redis entry
-                    // naturally expires at the same time as the DB record.
                     Duration redisTtl = mapping.getExpiresAt() != null
                             ? Duration.between(now, mapping.getExpiresAt())
                             : Duration.ofSeconds(urlTtlSeconds);

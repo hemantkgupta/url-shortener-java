@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { shortenUrl } from '../services/api';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 import { Copy, Check, ExternalLink, AlertCircle, Link2, Hash } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { cn } from '../lib/utils';
 
 export default function ShortenForm() {
   const { user } = useAuth();
@@ -55,6 +54,8 @@ export default function ShortenForm() {
               className="pl-11 h-14 text-lg rounded-xl border-slate-200 shadow-sm"
               value={longUrl}
               onChange={(e) => setLongUrl(e.target.value)}
+              aria-label="Long URL"
+              data-testid="shorten-url-input"
             />
           </div>
           <Button
@@ -62,6 +63,7 @@ export default function ShortenForm() {
             disabled={loading}
             size="lg"
             className="h-14 px-8 text-lg font-bold rounded-xl bg-blue-600 hover:bg-blue-700 shadow-md min-w-[180px]"
+            data-testid="shorten-url-submit"
           >
             {loading ? 'Shortening...' : 'Shorten URL'}
           </Button>
@@ -79,6 +81,8 @@ export default function ShortenForm() {
                 className="pl-11 h-12 rounded-xl border-slate-200 shadow-sm"
                 value={customSlug}
                 onChange={(e) => setCustomSlug(e.target.value)}
+                aria-label="Custom alias"
+                data-testid="custom-alias-input"
               />
             </div>
           </div>
@@ -93,7 +97,10 @@ export default function ShortenForm() {
       )}
 
       {result && (
-        <div className="mt-6 p-6 bg-blue-50 border border-blue-200 rounded-xl animate-in fade-in slide-in-from-top-4 duration-500">
+        <div
+          className="mt-6 p-6 bg-blue-50 border border-blue-200 rounded-xl animate-in fade-in slide-in-from-top-4 duration-500"
+          data-testid="shorten-result"
+        >
           <p className="text-sm font-medium text-blue-900 mb-2">Success! Your short URL is ready:</p>
           <div className="flex items-center gap-2">
             <div className="flex-1 px-4 py-2 bg-white border border-blue-300 rounded-lg font-mono text-blue-600 truncate">
@@ -104,6 +111,7 @@ export default function ShortenForm() {
               size="icon"
               onClick={copyToClipboard}
               className="bg-white border-blue-300 text-blue-600 hover:bg-blue-50"
+              data-testid="shorten-copy-button"
             >
               {copied ? <Check className="w-5 h-5 text-green-500" /> : <Copy className="w-5 h-5" />}
             </Button>
@@ -112,6 +120,7 @@ export default function ShortenForm() {
               size="icon"
               asChild
               className="bg-white border-blue-300 text-blue-600 hover:bg-blue-50"
+              data-testid="shorten-result-link"
             >
               <a href={result.short_url} target="_blank" rel="noopener noreferrer">
                 <ExternalLink className="w-5 h-5" />

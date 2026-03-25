@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useState, useCallback } from 'react';
 import { googleLogout } from '@react-oauth/google';
 import { setToken, clearToken } from '../auth/tokenStore';
+import { isLocalTestAuthEnabled, TEST_AUTH_TOKEN, TEST_USER_PROFILE } from '../auth/e2eAuth';
 
 const AuthContext = createContext();
 
@@ -20,14 +21,38 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null); // { name, email, picture, sub }
 
   const signIn = useCallback((credentialResponse) => {
-    const payload = decodeJwtPayload(credentialResponse.credential);
+    const hasCredential = Boolean(credentialResponse?.credential);
+    const payload = hasCredential
+      ? decodeJwtPayload(credentialResponse.credential)
+      : credentialResponse;
+
     if (!payload) return;
-    setToken(credentialResponse.credential);
+
+    if (hasCredential) {
+      setToken(credentialResponse.credential);
+    } else if (isLocalTestAuthEnabled()) {
+      setToken(TEST_AUTH_TOKEN);
+    } else {
+      return;
+    }
+
     setUser({
       name: payload.name,
       email: payload.email,
       picture: payload.picture,
       sub: payload.sub,
+      isAnonymous: false,
+    });
+  }, []);
+
+  const signInAsTestUser = useCallback(() => {
+    if (!isLocalTestAuthEnabled()) {
+      return;
+    }
+
+    setToken(TEST_AUTH_TOKEN);
+    setUser({
+      ...TEST_USER_PROFILE,
       isAnonymous: false,
     });
   }, []);
@@ -39,10 +64,10 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, signIn, signInAsTestUser, signOut }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
-export const useAuth = () => useContext(AuthContext);
+export { AuthContext };

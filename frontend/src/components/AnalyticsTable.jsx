@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getTopAnalytics } from '../services/api';
-import { ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -23,14 +23,14 @@ export default function AnalyticsTable() {
     refetchInterval: 5000,
   });
 
-  const analyticsData = data?.top_links || [];
+  const analyticsData = Array.isArray(data) ? data : [];
 
   const handlePrevious = () => {
     if (page > 1) setPage(page - 1);
   };
 
   const handleNext = () => {
-    if (data && data.top_links && data.top_links.length === pageSize) setPage(page + 1);
+    if (analyticsData.length === pageSize) setPage(page + 1);
   };
 
   if (isLoading) {
@@ -97,7 +97,7 @@ export default function AnalyticsTable() {
                 </TableCell>
                 <TableCell className="px-6 py-5 text-right">
                   <div className="font-bold text-slate-900 text-lg">
-                    {item.total_clicks.toLocaleString()}
+                    {item.click_count.toLocaleString()}
                   </div>
                 </TableCell>
               </TableRow>

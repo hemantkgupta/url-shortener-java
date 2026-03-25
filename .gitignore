@@ -31,6 +31,8 @@ Thumbs.db
 frontend/node_modules/
 frontend/dist/
 frontend/dist-ssr/
+frontend/playwright-report/
+frontend/test-results/
 
 # Logs
 *.log
@@ -41,3 +43,6 @@ HELP.md
 
 # Docker volumes / temp
 *.pid
+.claude/
+.gradle-local/
+.local-run/

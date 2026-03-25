@@ -26,7 +26,7 @@ spec:
         - name: CLICKHOUSE_USER
           value: "default"
         - name: CLICKHOUSE_PASSWORD
-          value: "password"
+          value: ""
         resources:
           limits:
             cpu: "1"

@@ -17,7 +17,6 @@ public interface UrlMappingRepository extends JpaRepository<UrlMapping, Long> {
     Optional<UrlMapping> findByLongUrl(String longUrl);
     Optional<UrlMapping> findByShortCode(String shortCode);
 
-    // Fetch a batch of IDs whose TTL has passed — used by the cleanup scheduler.
     @Query("SELECT m.id FROM UrlMapping m WHERE m.expiresAt IS NOT NULL AND m.expiresAt < :cutoff ORDER BY m.expiresAt")
     List<Long> findExpiredIds(@Param("cutoff") LocalDateTime cutoff, Pageable pageable);
 

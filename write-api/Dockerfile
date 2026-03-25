@@ -1,16 +1,14 @@
-FROM eclipse-temurin:17 AS build
-WORKDIR /app
+FROM gradle:8.7-jdk17 AS build
+WORKDIR /build
 
 # Copy Gradle wrapper and config first (layer cache)
-COPY gradlew gradlew.bat settings.gradle build.gradle ./
+COPY settings.gradle build.gradle ./
 COPY gradle/ gradle/
 COPY write-api/build.gradle write-api/
 
-RUN chmod +x gradlew && ./gradlew :write-api:dependencies --no-daemon -q 2>/dev/null || true
-
 # Copy source and build
 COPY write-api/src write-api/src
-RUN ./gradlew :write-api:bootJar --no-daemon -x test
+RUN gradle :write-api:bootJar --no-daemon -x test
 
 # Download OpenTelemetry Java agent (separate layer — cached unless version changes)
 FROM alpine:3.19 AS otel-agent
@@ -20,7 +18,7 @@ RUN apk add --no-cache curl && \
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-COPY --from=build /app/write-api/build/libs/*.jar app.jar
+COPY --from=build /build/write-api/build/libs/*.jar app.jar
 COPY --from=otel-agent /opentelemetry-javaagent.jar opentelemetry-javaagent.jar
 EXPOSE 8080 9092
 # Agent activated via JAVA_TOOL_OPTIONS env var in docker-compose (not baked into CMD)

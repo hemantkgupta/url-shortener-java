@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Routes, Route, NavLink, Link } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
-import { AuthProvider, useAuth } from './context/AuthContext';
+import { AuthProvider } from './context/AuthContext';
+import { useAuth } from './context/useAuth';
 import Home from './components/Home';
 import MyLinks from './components/MyLinks';
 import AuthModal from './components/AuthModal';
@@ -99,16 +100,26 @@ function AppContent() {
 }
 
 function App() {
+  const hasGoogleClientId = Boolean(GOOGLE_CLIENT_ID);
+
+  const shell = (
+    <AuthProvider>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <AppContent />
+        </BrowserRouter>
+      </QueryClientProvider>
+    </AuthProvider>
+  );
+
   return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <AuthProvider>
-        <QueryClientProvider client={queryClient}>
-          <BrowserRouter>
-            <AppContent />
-          </BrowserRouter>
-        </QueryClientProvider>
-      </AuthProvider>
-    </GoogleOAuthProvider>
+    hasGoogleClientId ? (
+      <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+        {shell}
+      </GoogleOAuthProvider>
+    ) : (
+      shell
+    )
   );
 }
 

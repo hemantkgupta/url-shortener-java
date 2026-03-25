@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
 
   # ── Redis ──────────────────────────────────────────────────────────────────
@@ -13,9 +11,10 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── etcd (worker-ID registry for Snowflake key gen) ───────────────────────
+  # ── etcd (optional worker-ID registry for Snowflake key gen) ───────────────
   etcd:
-    image: bitnami/etcd:3.5
+    image: bitnami/etcd:3.5.21
+    profiles: ["snowflake"]
     environment:
       ALLOW_NONE_AUTHENTICATION: "yes"
       ETCD_ADVERTISE_CLIENT_URLS: http://etcd:2379
@@ -46,7 +45,7 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      test: ["CMD-SHELL", "bash -lc '</dev/tcp/localhost/9092'"]
       interval: 10s
       timeout: 10s
       retries: 10
@@ -72,7 +71,7 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "15432:5432"
     # Enable logical replication for Debezium CDC
     command: >
       postgres
@@ -91,7 +90,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Key Generation Service (port 8085) ────────────────────────────────────
+  # ── Key Generation Service (generated short codes, port 8085) ──────────────
   key-gen-service:
     build:
       context: .
@@ -101,10 +100,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      etcd:
-        condition: service_healthy
     environment:
-      APP_KEY_GEN_STRATEGY: DUAL_BUFFER   # override to SNOWFLAKE to enable Snowflake IDs
+      APP_KEY_GEN_STRATEGY: DUAL_BUFFER
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/urlshortener
       SPRING_DATASOURCE_USERNAME: urluser
       SPRING_DATASOURCE_PASSWORD: urlpass
@@ -112,6 +109,7 @@ services:
       JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: key-gen-service
       OTEL_LOGS_EXPORTER: otlp
     healthcheck:
@@ -148,6 +146,7 @@ services:
       JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: write-api
       OTEL_LOGS_EXPORTER: otlp
     healthcheck:
@@ -180,6 +179,7 @@ services:
       JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: read-api
       OTEL_LOGS_EXPORTER: otlp
     healthcheck:
@@ -206,6 +206,7 @@ services:
       JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: analytics-worker
       OTEL_LOGS_EXPORTER: otlp
 
@@ -235,8 +236,16 @@ services:
       JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: cdc-worker
       OTEL_LOGS_EXPORTER: otlp
+    # cdc-worker is a background Debezium process, not an HTTP service.
+    # Health is process-liveness based because there is no actuator endpoint.
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ── Analytics API (ClickHouse queries, port 8083) ─────────────────────────
   analytics-api:
@@ -255,6 +264,7 @@ services:
       JAVA_TOOL_OPTIONS: "-javaagent:/app/opentelemetry-javaagent.jar"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_METRICS_EXPORTER: none
       OTEL_SERVICE_NAME: analytics-api
       OTEL_LOGS_EXPORTER: otlp
     healthcheck:
@@ -308,7 +318,7 @@ services:
     volumes:
       - ./envoy/envoy-write.yaml:/etc/envoy/envoy.yaml:ro
     ports:
-      - "10000:10000"
+      - "11000:10000"
     depends_on:
       write-api:
         condition: service_healthy
@@ -342,7 +352,7 @@ services:
       - read-api
       - analytics-api
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8000/nginx-health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8000/nginx-health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -405,46 +415,117 @@ services:
       CLICKHOUSE_PASSWORD: ""
 
   # ── SigNoz — dedicated ClickHouse for telemetry (traces, metrics, logs) ────
+  zookeeper-1:
+    image: signoz/zookeeper:3.7.1
+    user: root
+    environment:
+      ZOO_SERVER_ID: 1
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+      ZOO_AUTOPURGE_INTERVAL: 1
+      ZOO_ENABLE_PROMETHEUS_METRICS: "yes"
+      ZOO_PROMETHEUS_METRICS_PORT_NUMBER: 9141
+    volumes:
+      - signoz-zookeeper-data:/bitnami/zookeeper
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -m 2 http://localhost:8080/commands/ruok | grep error | grep null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   clickhouse-signoz:
-    image: clickhouse/clickhouse-server:24.1.2-alpine
+    image: clickhouse/clickhouse-server:25.5.6
+    depends_on:
+      zookeeper-1:
+        condition: service_healthy
     environment:
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  # ── SigNoz — OTEL Collector (receives spans/metrics/logs on 4317/4318) ─────
-  otel-collector:
-    image: signoz/signoz-otel-collector:0.88.17
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    user: root
+      CLICKHOUSE_SKIP_USER_SETUP: 1
     volumes:
-      - ./signoz/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
+      - signoz-clickhouse-data:/var/lib/clickhouse
+      - ./signoz/clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+      - ./signoz/clickhouse-zookeeper.xml:/etc/clickhouse-server/config.d/zookeeper.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query='SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  signoz-telemetrystore-migrator:
+    image: signoz/signoz-otel-collector:v0.144.2
+    entrypoint: ["/bin/sh"]
+    command:
+      - -c
+      - |
+        /signoz-otel-collector migrate bootstrap &&
+        /signoz-otel-collector migrate sync up &&
+        /signoz-otel-collector migrate async up
+    environment:
+      SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_CLUSTER: cluster
+      SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_DSN: tcp://clickhouse-signoz:9000
+      SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_REPLICATION: "true"
+      SIGNOZ_OTEL_COLLECTOR_TIMEOUT: 10m
     depends_on:
       clickhouse-signoz:
         condition: service_healthy
+    restart: on-failure
+
+  # ── SigNoz — OTEL Collector (receives spans/metrics/logs on 4317/4318) ─────
+  otel-collector:
+    image: signoz/signoz-otel-collector:v0.144.2
+    entrypoint: ["/bin/sh"]
+    command:
+      - -c
+      - |
+        /signoz-otel-collector migrate sync check &&
+        /signoz-otel-collector --config=/etc/otel-collector-config.yaml --copy-path=/var/tmp/collector-config.yaml
+    volumes:
+      - ./signoz/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    environment:
+      OTEL_RESOURCE_ATTRIBUTES: host.name=url-shortener-local,os.type=linux
+      LOW_CARDINAL_EXCEPTION_GROUPING: "false"
+      SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_CLUSTER: cluster
+      SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_DSN: tcp://clickhouse-signoz:9000
+      SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_REPLICATION: "true"
+      SIGNOZ_OTEL_COLLECTOR_TIMEOUT: 10m
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      signoz-telemetrystore-migrator:
+        condition: service_completed_successfully
 
   # ── SigNoz — Unified image (query-service + frontend merged in v0.47+) ─────
-  # Web UI: http://localhost:3301
   signoz:
-    image: signoz/signoz:latest
+    image: signoz/signoz:v0.115.0
     environment:
-      ClickHouseUrl: tcp://clickhouse-signoz:9000
-      STORAGE: clickhouse
+      SIGNOZ_TELEMETRYSTORE_PROVIDER: clickhouse
+      SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN: tcp://clickhouse-signoz:9000
+      SIGNOZ_SQLSTORE_SQLITE_PATH: /var/lib/signoz/signoz.db
+      SIGNOZ_ANALYTICS_ENABLED: "false"
+      SIGNOZ_TOKENIZER_JWT_SECRET: local-dev-secret
       GODEBUG: netdns=go
-      TELEMETRY_ENABLED: "false"
       DEPLOYMENT_TYPE: docker-standalone-amd
+    volumes:
+      - signoz-sqlite:/var/lib/signoz
     ports:
-      - "3301:8080"   # Web UI
-      - "8085:8085"   # Query API
+      - "3301:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     depends_on:
       clickhouse-signoz:
         condition: service_healthy
 
 volumes:
   postgres-data:   # persists URL data across docker-compose down/up
+  signoz-clickhouse-data:
+  signoz-sqlite:
+  signoz-zookeeper-data:

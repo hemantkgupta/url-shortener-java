@@ -3,9 +3,10 @@ kind: ConfigMap
 metadata:
   name: write-api-config
 data:
-  SERVICE_NAME: "write-api"
-  SPANNER_DB: "projects/url-shortener/instances/main/databases/urls"
-  SPANNER_EMULATOR_HOST: "spanner-emulator:9010"
-  REDIS_ADDR: "redis:6379"
-  KAFKA_BROKERS: "kafka:9092"
-  SHORT_LINK_BASE_URL: "http://localhost:10001"
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/urlshortener"
+  SPRING_DATASOURCE_USERNAME: "urluser"
+  SPRING_DATASOURCE_PASSWORD: "urlpass"
+  SPRING_DATA_REDIS_HOST: "redis"
+  SPRING_DATA_REDIS_PORT: "6379"
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+  APP_BASE_URL: "http://localhost:8000"

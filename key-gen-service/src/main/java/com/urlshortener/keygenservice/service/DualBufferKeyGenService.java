@@ -21,21 +21,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-/**
- * Dual-buffer key generation backed by a Postgres counter table.
- *
- * Design:
- *   - Two in-memory buffers (current + next) each holding a pre-allocated range of IDs.
- *   - Threads consume from {@code current} using a lock-free AtomicLong cursor.
- *   - When {@code current} passes the {@code prefetchThreshold} (default 80%), a single
- *     background task reserves the next block from Postgres with one atomic UPDATE.
- *   - When {@code current} is exhausted, threads block briefly until the pre-fetched
- *     block is ready, then swap.
- *
- * Postgres block reservation (atomic, handles concurrent instances):
- *   UPDATE key_blocks SET next_id = next_id + ? WHERE id = 1 RETURNING next_id - ?
- *   Returns the inclusive start of the allocated range; the range is [start, start+blockSize).
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -51,12 +36,10 @@ public class DualBufferKeyGenService implements KeyGenService {
     @Value("${app.key-gen.dual-buffer.prefetch-threshold:0.8}")
     private double prefetchThreshold;
 
-    // ── Buffer state ──────────────────────────────────────────────────────────
     private final AtomicReference<BlockBuffer> currentRef = new AtomicReference<>();
     private volatile BlockBuffer nextBuffer = null;
     private final AtomicBoolean prefetching = new AtomicBoolean(false);
 
-    // Swap lock: held only during the brief buffer-exhausted slow path
     private final ReentrantLock swapLock = new ReentrantLock();
     private final Condition nextReady = swapLock.newCondition();
 
@@ -66,11 +49,16 @@ public class DualBufferKeyGenService implements KeyGenService {
         return t;
     });
 
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
-
     @PostConstruct
     void init() {
-        // Eagerly load two blocks so we never block on the very first request
+        if (blockSize <= 0) {
+            throw new IllegalStateException("app.key-gen.dual-buffer.block-size must be positive");
+        }
+        if (prefetchThreshold < 0.0 || prefetchThreshold > 1.0) {
+            throw new IllegalStateException("app.key-gen.dual-buffer.prefetch-threshold must be between 0.0 and 1.0");
+        }
+
+        ensureCounterTable();
         currentRef.set(fetchBlock());
         nextBuffer = fetchBlock();
         log.info("DualBufferKeyGenService ready: strategy=DUAL_BUFFER blockSize={}", blockSize);
@@ -85,8 +73,6 @@ public class DualBufferKeyGenService implements KeyGenService {
             Thread.currentThread().interrupt();
         }
     }
-
-    // ── KeyGenService ─────────────────────────────────────────────────────────
 
     @Override
     public String nextCode() {
@@ -107,28 +93,20 @@ public class DualBufferKeyGenService implements KeyGenService {
         return "DUAL_BUFFER";
     }
 
-    // ── Internal ──────────────────────────────────────────────────────────────
-
     private long nextId() {
         while (true) {
             BlockBuffer buf = currentRef.get();
             long id = buf.tryNext();
 
             if (id >= 0) {
-                // Fast path: ID successfully claimed from current buffer
                 maybeSchedulePrefetch(buf);
                 return id;
             }
 
-            // Slow path: current buffer is exhausted — swap to next
             swapToNext(buf);
         }
     }
 
-    /**
-     * Triggers an async prefetch when the current buffer is past the threshold,
-     * provided no prefetch is already running and the next slot is empty.
-     */
     private void maybeSchedulePrefetch(BlockBuffer buf) {
         if (buf.pastThreshold(prefetchThreshold)
                 && nextBuffer == null
@@ -137,24 +115,29 @@ public class DualBufferKeyGenService implements KeyGenService {
         }
     }
 
-    /**
-     * Called when the current buffer is exhausted.
-     * Waits for the next buffer to arrive, then atomically swaps it in.
-     */
     private void swapToNext(BlockBuffer exhausted) {
         swapLock.lock();
         try {
-            // Another thread may have already done the swap
-            if (currentRef.get() != exhausted) return;
+            if (currentRef.get() != exhausted) {
+                return;
+            }
 
-            // Kick off prefetch if nobody else is doing it
             if (nextBuffer == null && prefetching.compareAndSet(false, true)) {
                 prefetchExecutor.submit(this::prefetchAndStore);
             }
 
-            // Wait until the next buffer materialises
+            long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
             while (nextBuffer == null) {
-                nextReady.await(200, TimeUnit.MILLISECONDS);
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    throw new IllegalStateException("Timed out waiting for next key block from Postgres");
+                }
+
+                nextReady.await(Math.min(remainingNanos, TimeUnit.MILLISECONDS.toNanos(200)), TimeUnit.NANOSECONDS);
+
+                if (nextBuffer == null && prefetching.compareAndSet(false, true)) {
+                    prefetchExecutor.submit(this::prefetchAndStore);
+                }
             }
 
             currentRef.set(nextBuffer);
@@ -180,27 +163,41 @@ public class DualBufferKeyGenService implements KeyGenService {
             }
         } catch (Exception e) {
             log.error("Failed to prefetch key block from Postgres", e);
+            swapLock.lock();
+            try {
+                nextReady.signalAll();
+            } finally {
+                swapLock.unlock();
+            }
         } finally {
             prefetching.set(false);
         }
     }
 
-    /**
-     * Reserves the next block atomically via a single Postgres UPDATE.
-     * Returns a BlockBuffer covering [start, start + blockSize).
-     */
     private BlockBuffer fetchBlock() {
         Long start = jdbc.queryForObject(
                 "UPDATE key_blocks SET next_id = next_id + ? WHERE id = 1 RETURNING next_id - ?",
                 Long.class, blockSize, blockSize);
         if (start == null) {
-            throw new IllegalStateException("key_blocks table is missing — ensure V3 migration has run");
+            throw new IllegalStateException("key_blocks table is missing - ensure bootstrap migration has run");
         }
         log.info("Reserved key block [{}, {})", start, start + blockSize);
         return new BlockBuffer(start, start + blockSize);
     }
 
-    // ── BlockBuffer ───────────────────────────────────────────────────────────
+    private void ensureCounterTable() {
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS key_blocks (
+                    id BIGINT PRIMARY KEY DEFAULT 1,
+                    next_id BIGINT NOT NULL DEFAULT 1
+                )
+                """);
+        jdbc.update("""
+                INSERT INTO key_blocks (id, next_id)
+                VALUES (1, 1)
+                ON CONFLICT DO NOTHING
+                """);
+    }
 
     static final class BlockBuffer {
         private final long start;
@@ -208,22 +205,20 @@ public class DualBufferKeyGenService implements KeyGenService {
         private final AtomicLong cursor;
 
         BlockBuffer(long start, long end) {
-            this.start  = start;
-            this.end    = end;
+            this.start = start;
+            this.end = end;
             this.cursor = new AtomicLong(start);
         }
 
-        /** Returns the next ID, or -1 if this buffer is exhausted. */
         long tryNext() {
             long id = cursor.getAndIncrement();
             return id < end ? id : -1;
         }
 
-        /** True if at least {@code threshold} fraction of IDs have been consumed. */
         boolean pastThreshold(double threshold) {
-            long pos  = cursor.get();
+            long pos = cursor.get();
             long size = end - start;
-            return size > 0 && (double)(pos - start) / size >= threshold;
+            return size > 0 && (double) (pos - start) / size >= threshold;
         }
     }
 }

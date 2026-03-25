@@ -1,0 +1,16 @@
+<clickhouse>
+  <zookeeper>
+    <node index="1">
+      <host>zookeeper-1</host>
+      <port>2181</port>
+    </node>
+  </zookeeper>
+  <distributed_ddl>
+    <path>/clickhouse/task_queue/ddl</path>
+  </distributed_ddl>
+  <macros>
+    <cluster>cluster</cluster>
+    <shard>01</shard>
+    <replica>01</replica>
+  </macros>
+</clickhouse>

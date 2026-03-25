@@ -1,0 +1,17 @@
+.git
+.gitignore
+.claude
+.gradle
+.gradle-local
+.local-run
+.DS_Store
+
+**/build
+**/.gradle
+**/node_modules
+**/dist
+**/playwright-report
+**/test-results
+
+tmp
+tmp/**

@@ -28,9 +28,9 @@ static_resources:
                     regex: "^/[a-zA-Z0-9_-]+$"
                 route:
                   cluster: read_api_service
-                rate_limits:
-                - actions:
-                  - remote_address: {}
+                  rate_limits:
+                  - actions:
+                    - remote_address: {}
               # Reject malformed short codes (400) — no rate limit action
               - match:
                   prefix: "/"

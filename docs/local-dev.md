@@ -51,21 +51,25 @@ Run infra in Docker, services natively with Gradle. Hot reload possible.
 ### Step 1 — Start infrastructure only
 
 ```bash
-docker compose up redis kafka clickhouse -d
+docker compose up postgres redis kafka clickhouse -d
 ```
+
+`postgres` is published on host port `15432` to avoid colliding with a locally installed PostgreSQL daemon.
 
 ### Step 2 — Start write-api
 
 ```bash
-./gradlew :write-api:bootRun
-# Starts on :8080, H2 TCP server on :9092
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:15432/urlshortener \
+./gradlew :write-api:bootRun --args='--app.base-url=http://localhost:8081'
+# Starts on :8080
 ```
 
 ### Step 3 — Start read-api (new terminal)
 
 ```bash
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:15432/urlshortener \
 ./gradlew :read-api:bootRun
-# Starts on :8081, connects to H2 TCP server at localhost:9092
+# Starts on :8081
 ```
 
 ### Step 4 — Start analytics-worker (new terminal)
@@ -75,19 +79,29 @@ docker compose up redis kafka clickhouse -d
 # Connects to Kafka at localhost:9094, ClickHouse at localhost:8123
 ```
 
-### Step 5 — Start analytics-api (new terminal)
+### Step 5 — Start cdc-worker (new terminal, optional but recommended)
+
+```bash
+POSTGRES_HOST=localhost POSTGRES_PORT=15432 ./gradlew :cdc-worker:bootRun
+# Streams PostgreSQL WAL changes into Kafka and Redis
+```
+
+This service does not expose an HTTP actuator endpoint. In Docker Compose it
+is health-checked by process liveness, not by curling a port.
+
+### Step 6 — Start analytics-api (new terminal)
 
 ```bash
 ./gradlew :analytics-api:bootRun
 # Starts on :8083
 ```
 
-### Step 6 — Start frontend dev server (new terminal)
+### Step 7 — Start frontend dev server (new terminal)
 
 ```bash
 cd frontend
 npm install --legacy-peer-deps
-npm run dev
+VITE_SHORT_LINK_BASE_URL=http://localhost:8081 npm run dev -- --host 0.0.0.0
 # Vite starts on :5173 with proxy to backend services
 ```
 
@@ -131,6 +145,9 @@ All defaults work out of the box for local dev. Override via environment or `app
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APP_BASE_URL` | `http://localhost:8000` | Base URL for generated short links |
+| `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/urlshortener` | PostgreSQL JDBC URL |
+| `SPRING_DATASOURCE_USERNAME` | `urluser` | PostgreSQL username |
+| `SPRING_DATASOURCE_PASSWORD` | `urlpass` | PostgreSQL password |
 | `SPRING_DATA_REDIS_HOST` | `localhost` | Redis host |
 | `SPRING_DATA_REDIS_PORT` | `6379` | Redis port |
 | `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9094` | Kafka brokers |
@@ -138,8 +155,11 @@ All defaults work out of the box for local dev. Override via environment or `app
 ### read-api
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SPRING_DATASOURCE_URL` | `jdbc:h2:tcp://localhost:9092/mem:urlshortener` | H2 TCP connection |
+| `SPRING_DATASOURCE_URL` | `jdbc:postgresql://localhost:5432/urlshortener` | PostgreSQL JDBC URL |
+| `SPRING_DATASOURCE_USERNAME` | `urluser` | PostgreSQL username |
+| `SPRING_DATASOURCE_PASSWORD` | `urlpass` | PostgreSQL password |
 | `SPRING_DATA_REDIS_HOST` | `localhost` | Redis host |
+| `SPRING_DATA_REDIS_PORT` | `6379` | Redis port |
 | `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9094` | Kafka brokers |
 
 ### analytics-worker & analytics-api
@@ -149,6 +169,18 @@ All defaults work out of the box for local dev. Override via environment or `app
 | `APP_CLICKHOUSE_USERNAME` | `default` | ClickHouse user |
 | `APP_CLICKHOUSE_PASSWORD` | `` (empty) | ClickHouse password |
 | `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9094` | Kafka brokers (worker only) |
+
+### cdc-worker
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POSTGRES_HOST` | `localhost` | PostgreSQL host for Debezium |
+| `POSTGRES_PORT` | `5432` | PostgreSQL port for Debezium |
+| `POSTGRES_DB` | `urlshortener` | PostgreSQL database |
+| `POSTGRES_USER` | `urluser` | PostgreSQL user |
+| `POSTGRES_PASSWORD` | `urlpass` | PostgreSQL password |
+| `SPRING_DATA_REDIS_HOST` | `localhost` | Redis host |
+| `SPRING_DATA_REDIS_PORT` | `6379` | Redis port |
+| `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9094` | Kafka brokers |
 
 ---
 

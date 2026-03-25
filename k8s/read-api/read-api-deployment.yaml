@@ -17,13 +17,40 @@ spec:
         image: read-api:latest
         imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 8080
+        - containerPort: 8081
         envFrom:
         - configMapRef:
             name: read-api-config
         env:
-        - name: OTEL_COLLECTOR_ADDR
-          value: "signoz-otel-collector:4317"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-javaagent:/app/opentelemetry-javaagent.jar"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://signoz-otel-collector:4317"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "grpc"
+        - name: OTEL_SERVICE_NAME
+          value: "read-api"
+        - name: OTEL_LOGS_EXPORTER
+          value: "otlp"
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
 ---
 apiVersion: v1
 kind: Service
@@ -35,4 +62,4 @@ spec:
   ports:
   - protocol: TCP
     port: 80
-    targetPort: 8080
+    targetPort: 8081

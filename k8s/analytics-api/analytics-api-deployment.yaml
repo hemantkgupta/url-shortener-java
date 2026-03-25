@@ -19,16 +19,24 @@ spec:
         image: analytics-api:latest
         imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 8080
+        - containerPort: 8083
         env:
-        - name: OTEL_COLLECTOR_ADDR
-          value: "signoz-otel-collector:4317"
-        - name: CLICKHOUSE_ADDR
-          value: "clickhouse:9000"
-        - name: SPANNER_EMULATOR_HOST
-          value: "spanner-emulator:9010"
+        - name: APP_CLICKHOUSE_URL
+          value: "jdbc:clickhouse://clickhouse:8123/default?compress=0"
+        - name: APP_CLICKHOUSE_USERNAME
+          value: "default"
+        - name: APP_CLICKHOUSE_PASSWORD
+          value: ""
+        - name: JAVA_TOOL_OPTIONS
+          value: "-javaagent:/app/opentelemetry-javaagent.jar"
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://otel-collector:4317"
+          value: "http://signoz-otel-collector:4317"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "grpc"
+        - name: OTEL_SERVICE_NAME
+          value: "analytics-api"
+        - name: OTEL_LOGS_EXPORTER
+          value: "otlp"
         resources:
           limits:
             cpu: "500m"
@@ -38,13 +46,13 @@ spec:
             memory: "256Mi"
         livenessProbe:
           httpGet:
-            path: /health
-            port: 8080
+            path: /actuator/health
+            port: 8083
           initialDelaySeconds: 5
           periodSeconds: 10
         readinessProbe:
           httpGet:
-            path: /health
-            port: 8080
+            path: /actuator/health
+            port: 8083
           initialDelaySeconds: 5
           periodSeconds: 10

@@ -25,11 +25,11 @@ static_resources:
                   prefix: "/"
                 route:
                   cluster: write_api_service
-                # Tell Envoy which descriptor to send to the RLS for this route.
-                # remote_address = the client IP — used as the rate limit key.
-                rate_limits:
-                - actions:
-                  - remote_address: {}
+                  # Tell Envoy which descriptor to send to the RLS for this route.
+                  # remote_address = the client IP — used as the rate limit key.
+                  rate_limits:
+                  - actions:
+                    - remote_address: {}
           http_filters:
           # ── Layer 1: Local rate limit (in-process, zero network cost) ───────
           # First defense against per-instance burst. Each Envoy pod enforces

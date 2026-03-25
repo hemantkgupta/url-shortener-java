@@ -2,8 +2,11 @@ package com.urlshortener.writeapi.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+
+import java.nio.charset.StandardCharsets;
 
 /**
  * Wraps Redis Bloom Filter commands (BF.ADD / BF.EXISTS) via raw Lettuce execution.
@@ -22,8 +25,10 @@ public class BloomFilterService {
     /** Add a short code to the Bloom filter after creation. */
     public void add(String shortCode) {
         try {
-            redis.execute((connection) -> {
-                connection.execute("BF.ADD", BF_KEY.getBytes(), shortCode.getBytes());
+            byte[] key = BF_KEY.getBytes(StandardCharsets.UTF_8);
+            byte[] value = shortCode.getBytes(StandardCharsets.UTF_8);
+            redis.execute((RedisCallback<Void>) connection -> {
+                connection.execute("BF.ADD", key, value);
                 return null;
             });
         } catch (Exception e) {
@@ -37,8 +42,10 @@ public class BloomFilterService {
      */
     public boolean mightExist(String shortCode) {
         try {
-            Long result = redis.execute((connection) ->
-                connection.execute("BF.EXISTS", BF_KEY.getBytes(), shortCode.getBytes())
+            byte[] key = BF_KEY.getBytes(StandardCharsets.UTF_8);
+            byte[] value = shortCode.getBytes(StandardCharsets.UTF_8);
+            Long result = redis.execute((RedisCallback<Long>) connection ->
+                toLong(connection.execute("BF.EXISTS", key, value))
             );
             return result != null && result == 1L;
         } catch (Exception e) {
@@ -46,5 +53,15 @@ public class BloomFilterService {
             log.warn("BF.EXISTS failed for '{}', failing open: {}", shortCode, e.getMessage());
             return true;
         }
+    }
+
+    private Long toLong(Object rawResult) {
+        if (rawResult instanceof Long longResult) {
+            return longResult;
+        }
+        if (rawResult instanceof byte[] bytes) {
+            return Long.parseLong(new String(bytes, StandardCharsets.UTF_8));
+        }
+        return null;
     }
 }

@@ -11,9 +11,6 @@ import java.util.Optional;
 
 @Repository
 public interface UrlMappingRepository extends JpaRepository<UrlMapping, Long> {
-
-    // Only returns the mapping if it has not yet expired.
-    // expires_at IS NULL means never-expiring — always included.
     @Query("SELECT m FROM UrlMapping m WHERE m.shortCode = :shortCode " +
            "AND (m.expiresAt IS NULL OR m.expiresAt > :now)")
     Optional<UrlMapping> findActiveByShortCode(@Param("shortCode") String shortCode,

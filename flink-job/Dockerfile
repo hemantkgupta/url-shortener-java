@@ -4,13 +4,12 @@ WORKDIR /build
 # Copy root build files
 COPY build.gradle settings.gradle ./
 COPY gradle ./gradle
-COPY gradlew ./
 
 # Copy only flink-job module
 COPY flink-job/build.gradle ./flink-job/
 COPY flink-job/src ./flink-job/src
 
-RUN ./gradlew :flink-job:shadowJar --no-daemon -x test
+RUN gradle :flink-job:shadowJar --no-daemon -x test
 
 # Final image: just the fat JAR + Flink CLI to submit
 FROM flink:1.18-java17

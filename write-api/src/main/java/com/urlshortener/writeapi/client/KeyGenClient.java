@@ -1,19 +1,21 @@
 package com.urlshortener.writeapi.client;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.Map;
+import java.time.Duration;
 
 /**
- * HTTP client for the key-gen-service.
- * Fetches the next unique short code to use when creating a URL mapping.
+ * HTTP client for the key generation service.
  *
- * A single retry is attempted on failure to tolerate transient network hiccups
- * within the cluster; the caller should not retry further — let the HTTP request
- * fail fast so the upstream client gets a clear error.
+ * The client keeps the write path bounded with explicit connect/read timeouts
+ * and retries once on transient request failures before surfacing a 503.
  */
 @Slf4j
 @Component
@@ -24,46 +26,56 @@ public class KeyGenClient {
     @Value("${app.key-gen.url:http://localhost:8085}")
     private String keyGenUrl;
 
-    public KeyGenClient() {
-        this.restTemplate = new RestTemplate();
+    public KeyGenClient(
+            RestTemplateBuilder restTemplateBuilder,
+            @Value("${app.key-gen.connect-timeout-ms:1000}") long connectTimeoutMs,
+            @Value("${app.key-gen.read-timeout-ms:2000}") long readTimeoutMs) {
+
+        this.restTemplate = restTemplateBuilder
+                .setConnectTimeout(Duration.ofMillis(connectTimeoutMs))
+                .setReadTimeout(Duration.ofMillis(readTimeoutMs))
+                .build();
     }
 
-    /**
-     * Returns the next unique short code from the key-gen-service.
-     *
-     * @throws KeyGenUnavailableException if the service is unreachable after one retry
-     */
     public String nextCode() {
-        String url = keyGenUrl + "/api/v1/keys/next";
+        String url = trimTrailingSlash(keyGenUrl) + "/api/v1/keys/next";
         try {
-            @SuppressWarnings("unchecked")
-            Map<String, String> body = restTemplate.getForObject(url, Map.class);
-            if (body == null || !body.containsKey("short_code")) {
-                throw new KeyGenUnavailableException("key-gen-service returned empty response");
-            }
-            return body.get("short_code");
-        } catch (KeyGenUnavailableException e) {
-            throw e;
-        } catch (Exception first) {
+            return fetchNextCode(url);
+        } catch (RestClientException first) {
             log.warn("key-gen-service call failed ({}), retrying once", first.getMessage());
             try {
-                @SuppressWarnings("unchecked")
-                Map<String, String> body = restTemplate.getForObject(url, Map.class);
-                if (body == null || !body.containsKey("short_code")) {
-                    throw new KeyGenUnavailableException("key-gen-service returned empty response");
-                }
-                return body.get("short_code");
-            } catch (KeyGenUnavailableException e) {
-                throw e;
-            } catch (Exception second) {
+                return fetchNextCode(url);
+            } catch (RestClientException second) {
                 throw new KeyGenUnavailableException(
                         "key-gen-service unavailable after retry: " + second.getMessage(), second);
             }
         }
     }
 
+    private String fetchNextCode(String url) {
+        KeyResponse response = restTemplate.getForObject(url, KeyResponse.class);
+        if (response == null || !StringUtils.hasText(response.shortCode())) {
+            throw new KeyGenUnavailableException("key-gen-service returned an empty response");
+        }
+        return response.shortCode();
+    }
+
+    private String trimTrailingSlash(String value) {
+        return value != null && value.endsWith("/")
+                ? value.substring(0, value.length() - 1)
+                : value;
+    }
+
+    public record KeyResponse(@JsonProperty("short_code") String shortCode) {
+    }
+
     public static class KeyGenUnavailableException extends RuntimeException {
-        KeyGenUnavailableException(String msg) { super(msg); }
-        KeyGenUnavailableException(String msg, Throwable cause) { super(msg, cause); }
+        public KeyGenUnavailableException(String message) {
+            super(message);
+        }
+
+        public KeyGenUnavailableException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 }

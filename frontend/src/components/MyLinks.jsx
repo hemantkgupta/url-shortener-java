@@ -14,10 +14,12 @@ import { Card } from "./ui/card";
 import { Button } from "./ui/button";
 
 export default function MyLinks() {
-  const { data: history, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['user-history'],
     queryFn: getUserHistory,
   });
+
+  const history = Array.isArray(data) ? data : [];
 
   if (isLoading) {
     return (
@@ -66,16 +68,16 @@ export default function MyLinks() {
           </TableHeader>
           <TableBody>
             {history.map((item) => (
-              <TableRow key={item.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors group">
+              <TableRow key={item.short_code} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/50 transition-colors group">
                 <TableCell className="px-6 py-5">
                   <div className="flex items-center gap-2">
                     <a
-                      href={`${import.meta.env.VITE_SHORT_LINK_BASE_URL || 'http://localhost:10001'}/${item.id}`}
+                      href={`${import.meta.env.VITE_SHORT_LINK_BASE_URL || 'http://localhost:10001'}/${item.short_code}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
                     >
-                      {(import.meta.env.VITE_SHORT_LINK_BASE_URL || 'sho.rt').replace(/^https?:\/\//, '')}/{item.id}
+                      {(import.meta.env.VITE_SHORT_LINK_BASE_URL || 'sho.rt').replace(/^https?:\/\//, '')}/{item.short_code}
                       <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
                     </a>
                   </div>

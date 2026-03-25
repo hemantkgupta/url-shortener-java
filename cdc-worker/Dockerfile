@@ -3,17 +3,13 @@ WORKDIR /build
 
 COPY build.gradle settings.gradle ./
 COPY gradle ./gradle
-COPY gradlew ./
-
 COPY cdc-worker/build.gradle ./cdc-worker/
 COPY cdc-worker/src ./cdc-worker/src
 
-RUN ./gradlew :cdc-worker:bootJar --no-daemon -x test
+RUN gradle :cdc-worker:bootJar --no-daemon -x test
 
-FROM eclipse-temurin:17-jre-alpine
+FROM eclipse-temurin:17-jre
 WORKDIR /app
-
-RUN apk add --no-cache curl
 
 COPY --from=build /build/cdc-worker/build/libs/*.jar app.jar
 

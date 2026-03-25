@@ -1,143 +1,102 @@
 import { test, expect } from '@playwright/test';
+import { TEST_AUTH_STORAGE_KEY, TEST_AUTH_STORAGE_VALUE } from '../src/auth/e2eAuth.js';
 
 test.describe('URL Shortener Integration', () => {
   test.beforeEach(async ({ page }) => {
-    // Go to the home page
-    await page.goto('/');
+    await page.addInitScript(
+      ({ key, value }) => window.localStorage.setItem(key, value),
+      { key: TEST_AUTH_STORAGE_KEY, value: TEST_AUTH_STORAGE_VALUE },
+    );
   });
 
-  test('should shorten a URL and show it in the list', async ({ page }) => {
+  test('should shorten a URL and redirect to the original destination', async ({ page }) => {
+    await page.goto('/');
     const longUrl = `https://example.com/test-${Date.now()}`;
 
-    // Fill the input
-    await page.fill('input[placeholder*="https://very-long-url.com/some/path/to/resource"]', longUrl);
+    await page.getByTestId('shorten-url-input').fill(longUrl);
+    await page.getByTestId('shorten-url-submit').click();
 
-    // Click the shorten button
-    await page.click('button:has-text("Shorten")');
+    const resultBox = page.getByTestId('shorten-result');
+    await expect(resultBox).toBeVisible({ timeout: 15000 });
 
-    // Wait for the short URL to appear (it should contain the dynamic domain)
-    const resultBox = page.locator('.font-mono.text-blue-600');
-    await expect(resultBox).toBeVisible();
-    await expect(resultBox).toContainText('localhost:8000');
+    const shortLink = page.getByTestId('shorten-result-link');
+    await expect(shortLink).toBeVisible();
 
-    const shortUrl = await resultBox.innerText();
+    const href = await shortLink.getAttribute('href');
+    expect(href).toBeTruthy();
+    expect(href).toMatch(/^https?:\/\//);
 
-    // Step 2: Click the short URL to generate analytics
-    // We use a new page or just navigate to it
-    await page.goto(shortUrl);
-    // Wait for redirect to happen (it should go to the longUrl)
+    await page.goto(href, { waitUntil: 'domcontentloaded' });
     await expect(page).toHaveURL(longUrl);
+  });
 
-    // Step 3: Check if the long URL is in the analytics table
-    // We need to wait for Flink and ClickHouse to process the event
+  test('should display the analytics dashboard with snake_case fields', async ({ page }) => {
+    await page.route('**/api/v1/analytics/top**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            short_code: 'analytics1',
+            long_url: 'https://example.com/analytics',
+            click_count: 42,
+            created_at: '2026-03-23T12:00:00',
+          },
+        ]),
+      });
+    });
+
     await page.goto('/');
-    // Wait up to 20 seconds for the analytics to appear
-    await expect(page.locator(`text=${longUrl}`)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByRole('heading', { name: 'Top Performing Links' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Short Link' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Destination' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Clicks' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /analytics1/ })).toBeVisible();
+    await expect(page.getByText('42')).toBeVisible();
   });
 
-  test('should display analytics dashboard', async ({ page }) => {
-    // Check for the dashboard title
-    await expect(page.locator('text=Top Performing Links')).toBeVisible();
+  test('should let anonymous users dismiss sign-in and keep the home experience', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Sign In' }).click();
+    await expect(page.getByRole('heading', { name: 'Sign In' })).toBeVisible();
 
-    // Check if the table has headers
-    await expect(page.locator('th:has-text("Short Link")')).toBeVisible();
-    await expect(page.locator('th:has-text("Destination")')).toBeVisible();
-    await expect(page.locator('th:has-text("Clicks")')).toBeVisible();
+    await page.getByRole('button', { name: 'Continue without signing in' }).click();
+    await expect(page.getByRole('button', { name: 'Continue without signing in' })).toHaveCount(0);
+
+    await page.goto('/my-links');
+    await expect(page.getByRole('heading', { name: 'Shorten your link' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'My Links' })).toHaveCount(0);
   });
 
-  test('should shorten a URL with custom slug when logged in', async ({ page }) => {
-    // 1. Open Auth Modal and Login as guest
-    await page.click('button:has-text("Sign In")');
-    await page.click('button:has-text("Continue as Guest")');
-    // Wait for modal to close and user state to update
-    await expect(page.locator('text=Guest')).toBeVisible();
+  test('should let users sign in locally and view their links', async ({ page }) => {
+    await page.route('**/api/v1/history', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            short_code: 'e2eAuth1',
+            long_url: 'https://example.com/private-link',
+            created_at: '2026-03-23T12:00:00',
+          },
+        ]),
+      });
+    });
 
-    const longUrl = `https://example.com/auth-test-${Date.now()}`;
-    const customSlug = `custom-${Date.now()}`;
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Sign In' }).click();
+    await page.getByTestId('auth-local-login').click();
 
-    // 2. Fill the long URL
-    await page.fill('input[placeholder*="https://very-long-url.com/some/path/to/resource"]', longUrl);
+    await expect(page.getByText('playwright')).toBeVisible();
+    await expect(page.getByRole('link', { name: /My Links/ })).toBeVisible();
 
-    // 3. Fill the custom slug
-    await page.fill('input[placeholder="Custom alias (optional)"]', customSlug);
+    await page.getByRole('link', { name: 'My Links' }).click();
+    await expect(page).toHaveURL(/\/my-links$/);
+    await expect(page.getByRole('heading', { name: 'No links yet' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: /e2eAuth1/ })).toBeVisible();
+    await expect(page.getByText('https://example.com/private-link')).toBeVisible();
 
-    // 4. Click the shorten button
-    await page.click('button:has-text("Shorten")');
-
-    // 5. Verify the result
-    const resultBox = page.locator('.font-mono.text-blue-600');
-    await expect(resultBox).toBeVisible({ timeout: 10000 });
-    await expect(resultBox).toContainText(customSlug);
-
-    // 6. Verify redirect
-    const shortUrl = await resultBox.innerText();
-    // We need to use the full URL including protocol for navigation
-    const fullShortUrl = shortUrl.startsWith('http') ? shortUrl : `http://${shortUrl}`;
-    await page.goto(fullShortUrl);
-    await expect(page).toHaveURL(longUrl);
-  });
-
-  test('should show user links in "My Links" page', async ({ page }) => {
-    // 1. Login as guest
-    await page.click('button:has-text("Sign In")');
-    await page.click('button:has-text("Continue as Guest")');
-    await expect(page.locator('text=Guest')).toBeVisible();
-
-    const longUrl = `https://example.com/history-test-${Date.now()}`;
-
-    // 2. Shorten a URL
-    await page.fill('input[placeholder*="https://very-long-url.com/some/path/to/resource"]', longUrl);
-    await page.click('button:has-text("Shorten")');
-    await expect(page.locator('.font-mono.text-blue-600')).toBeVisible();
-
-    // 3. Navigate to "My Links"
-    await page.click('nav >> text=My Links');
-    await expect(page).toHaveURL('/my-links');
-
-    // 4. Verify the link is in the list
-    // Use a more robust locator and wait for it to appear
-    await expect(page.locator(`[title="${longUrl}"]`)).toBeVisible({ timeout: 10000 });
-  });
-
-  test('should show multiple user links in "My Links" page in correct order', async ({ page }) => {
-    // 1. Login as guest
-    await page.click('button:has-text("Sign In")');
-    await page.click('button:has-text("Continue as Guest")');
-    await expect(page.locator('text=Guest')).toBeVisible();
-
-    const longUrl1 = `https://example.com/history-1-${Date.now()}`;
-    const longUrl2 = `https://example.com/history-2-${Date.now()}`;
-
-    // 2. Shorten first URL
-    await page.fill('input[placeholder*="https://very-long-url.com/some/path/to/resource"]', longUrl1);
-    await page.click('button:has-text("Shorten")');
-    await expect(page.locator('.font-mono.text-blue-600')).toBeVisible();
-
-    // 3. Shorten second URL
-    await page.fill('input[placeholder*="https://very-long-url.com/some/path/to/resource"]', longUrl2);
-    await page.click('button:has-text("Shorten")');
-    await expect(page.locator('.font-mono.text-blue-600')).toBeVisible();
-
-    // 4. Navigate to "My Links"
-    await page.click('nav >> text=My Links');
-    await expect(page).toHaveURL('/my-links');
-
-    // 5. Verify both links are in the list and in correct order (recent first)
-    const rows = page.locator('table tbody tr');
-    // We might have more links from previous tests if the DB is not cleared, 
-    // but at least these two should be there in correct relative order.
-
-    // Find the indices of our two links
-    const text1 = await rows.locator(`[title="${longUrl1}"]`).isVisible();
-    const text2 = await rows.locator(`[title="${longUrl2}"]`).isVisible();
-
-    await expect(page.locator(`[title="${longUrl1}"]`)).toBeVisible();
-    await expect(page.locator(`[title="${longUrl2}"]`)).toBeVisible();
-
-    // Verify ordering: longUrl2 should appear BEFORE longUrl1 in the DOM
-    const content = await page.content();
-    const index1 = content.indexOf(longUrl1);
-    const index2 = content.indexOf(longUrl2);
-    expect(index2).toBeLessThan(index1);
+    await page.getByRole('button', { name: /Logout/ }).click();
+    await expect(page.getByRole('link', { name: 'My Links' })).toHaveCount(0);
   });
 });

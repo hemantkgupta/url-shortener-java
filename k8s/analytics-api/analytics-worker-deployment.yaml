@@ -17,16 +17,40 @@ spec:
       containers:
       - name: analytics-worker
         image: analytics-worker:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8082
         env:
-        - name: CLICKHOUSE_ADDR
-          value: "clickhouse:9000"
-        - name: CLICKHOUSE_USER
+        - name: APP_CLICKHOUSE_URL
+          value: "jdbc:clickhouse://clickhouse:8123/analytics?compress=0"
+        - name: APP_CLICKHOUSE_USERNAME
           value: "default"
-        - name: CLICKHOUSE_PASSWORD
-          value: "password"
-        - name: KAFKA_BROKERS
+        - name: APP_CLICKHOUSE_PASSWORD
+          value: ""
+        - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
           value: "kafka:9092"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-javaagent:/app/opentelemetry-javaagent.jar"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://signoz-otel-collector:4317"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "grpc"
+        - name: OTEL_SERVICE_NAME
+          value: "analytics-worker"
+        - name: OTEL_LOGS_EXPORTER
+          value: "otlp"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8082
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8082
+          initialDelaySeconds: 10
+          periodSeconds: 15
         resources:
           limits:
             cpu: "500m"

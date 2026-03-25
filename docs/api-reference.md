@@ -32,7 +32,7 @@ Creates a short URL. Authentication is optional — anonymous users get a short 
 ```json
 {
   "long_url": "https://example.com/some/very/long/path",
-  "custom_slug": "my-slug"   // optional, ignored in Phase 1–4
+  "custom_slug": "my-slug"   // optional, 1-16 chars, letters/numbers/-/_
 }
 ```
 
@@ -45,16 +45,27 @@ Creates a short URL. Authentication is optional — anonymous users get a short 
 }
 ```
 
-**Response — 400 Bad Request** (missing or blank `long_url`)
+**Response — 400 Bad Request** (invalid or unsupported input)
 ```json
 {
   "status": 400,
-  "error": "long_url must not be blank"
+  "error": "Bad Request",
+  "message": "long_url must use http or https"
+}
+```
+
+**Response — 409 Conflict** (custom slug already in use)
+```json
+{
+  "status": 409,
+  "error": "Conflict",
+  "message": "custom_slug is already in use"
 }
 ```
 
 **Notes**:
 - Submitting the same `long_url` twice returns the existing short code (idempotent)
+- `custom_slug` is supported for new links; reserved paths like `api` and `my-links` are rejected
 - `short_url` base is the gateway URL (`http://localhost:8000`) not the read-api URL
 
 ---

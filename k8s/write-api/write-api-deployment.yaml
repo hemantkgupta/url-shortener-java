@@ -24,8 +24,16 @@ spec:
         - configMapRef:
             name: write-api-config
         env:
-        - name: OTEL_COLLECTOR_ADDR
-          value: "signoz-otel-collector:4317"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-javaagent:/app/opentelemetry-javaagent.jar"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://signoz-otel-collector:4317"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "grpc"
+        - name: OTEL_SERVICE_NAME
+          value: "write-api"
+        - name: OTEL_LOGS_EXPORTER
+          value: "otlp"
         resources:
           limits:
             cpu: "500m"
@@ -35,13 +43,13 @@ spec:
             memory: "256Mi"
         livenessProbe:
           httpGet:
-            path: /health
+            path: /actuator/health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
         readinessProbe:
           httpGet:
-            path: /health
+            path: /actuator/health
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
