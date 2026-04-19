@@ -24,4 +24,21 @@ public class GlobalExceptionHandler {
                 "path", request.getRequestURI()
         ));
     }
+
+    /**
+     * 410 Gone — short code existed but has expired.
+     * Semantically distinct from 404: tells clients not to retry.
+     */
+    @ExceptionHandler(UrlExpiredException.class)
+    public ResponseEntity<Map<String, Object>> handleGone(
+            UrlExpiredException ex, HttpServletRequest request) {
+
+        return ResponseEntity.status(HttpStatus.GONE).body(Map.of(
+                "timestamp", LocalDateTime.now().toString(),
+                "status", 410,
+                "error", "Gone",
+                "message", ex.getMessage(),
+                "path", request.getRequestURI()
+        ));
+    }
 }

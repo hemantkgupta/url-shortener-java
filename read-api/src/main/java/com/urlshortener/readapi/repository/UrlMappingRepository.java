@@ -15,4 +15,10 @@ public interface UrlMappingRepository extends JpaRepository<UrlMapping, Long> {
            "AND (m.expiresAt IS NULL OR m.expiresAt > :now)")
     Optional<UrlMapping> findActiveByShortCode(@Param("shortCode") String shortCode,
                                                @Param("now") LocalDateTime now);
+
+    /**
+     * Checks existence without expiry filter — used to distinguish 410 Gone
+     * (code existed but expired) from 404 Not Found (code never existed).
+     */
+    boolean existsByShortCode(String shortCode);
 }
