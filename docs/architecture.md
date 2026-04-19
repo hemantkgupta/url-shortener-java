@@ -40,7 +40,7 @@ flowchart TD
         Redis[(Redis 7\n:6379)]
         Kafka[(Kafka KRaft\n:9094)]
         CH[(ClickHouse 24\n:8123)]
-        H2[(H2 DB\nTCP :9092)]
+        PG[(PostgreSQL 16\n:5432)]
     end
 
     Browser -- "all traffic" --> GW
@@ -51,11 +51,11 @@ flowchart TD
     GW -- "/ and SPA fallback" --> FE
 
     WA --> Redis
-    WA --> H2
+    WA --> PG
     WA -- "url.created topic" --> Kafka
 
     RA --> Redis
-    RA --> H2
+    RA --> PG
     RA -- "url.clicked topic" --> Kafka
 
     Kafka --> AW
@@ -80,8 +80,9 @@ sequenceDiagram
     participant G as Gateway :8000
     participant W as write-api :8080
     participant R as Redis
-    participant DB as H2 DB
+    participant DB as Postgres
     participant K as Kafka
+    participant KGS as key-gen
 
     B->>G: POST /api/v1/shorten {long_url}
     G->>W: proxy → POST /api/v1/shorten
@@ -94,9 +95,9 @@ sequenceDiagram
         alt DB hit
             DB-->>W: existing UrlMapping
         else New URL
-            W->>DB: INSERT UrlMapping (placeholder)
-            W->>W: encode(id) → shortCode (Feistel cipher)
-            W->>DB: UPDATE shortCode
+            W->>KGS: Request Short Code
+            KGS-->>W: shortCode
+            W->>DB: INSERT UrlMapping
             W->>K: publish url.created {shortCode, longUrl, userId}
         end
         W->>R: SET url:{shortCode} + url:{longUrl} (TTL 24h)
@@ -113,7 +114,7 @@ sequenceDiagram
     participant G as Gateway :8000
     participant RA as read-api :8081
     participant R as Redis
-    participant DB as H2 DB
+    participant DB as Postgres
     participant K as Kafka
 
     B->>G: GET /{shortCode}
@@ -160,27 +161,25 @@ sequenceDiagram
 
 ---
 
-## Short Code Generation — Feistel Cipher
+## Short Code Generation — Key Generation Service
 
-Short codes are derived deterministically from the auto-incremented DB row ID using a 32-bit Feistel cipher, then base62-encoded.
+Short codes are provided by an independent `key-gen-service`. Instead of generating codes on each user request (which causes latency or relies on sequential DB IDs reducing security), `write-api` simply asks `key-gen-service` for pre-allocated codes.
 
 ```
-DB ID (Long)  →  Feistel(id, rounds=4)  →  base62 encode  →  shortCode (6-8 chars)
-     1        →        2891336763        →    "4jTh9q"
-     2        →         892341029        →    "aB3xKp"
+Request → key-gen-service (Active Buffer) → Returns code instantly
 ```
 
-**Why Feistel instead of random?**
-- Deterministic — same ID always produces same code
-- No collision risk — bijective mapping
-- Unpredictable — sequential IDs produce non-sequential codes (no enumeration attacks)
-- No extra DB column needed to store a separate random value
+**Why Dual Buffer Key Gen?**
+- Highly Available — In-memory buffer scales easily.
+- Lock Free — Doesn't lock PostgreSQL rows on every shorten request.
+- No collision risk — Codes are generated sequentially and allocated iteratively by the worker.
+- Unpredictable — The blocks are shuffled or Base62 encoded to eliminate sequential enumeration attacks.
 
 ---
 
 ## Data Models
 
-### H2 (write-api / read-api)
+### PostgreSQL (write-api / read-api)
 
 ```mermaid
 erDiagram

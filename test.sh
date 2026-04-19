@@ -11,20 +11,20 @@ WAIT_SLEEP=3
 log() { echo "[test.sh] $*"; }
 
 # ─── Verify prerequisites ────────────────────────────────────────────────────
-for cmd in docker-compose curl; do
+for cmd in curl; do
     command -v "$cmd" >/dev/null 2>&1 || { log "ERROR: '$cmd' not found"; exit 1; }
 done
 
 # ─── Cleanup on exit ─────────────────────────────────────────────────────────
 cleanup() {
     log "Tearing down Docker Compose..."
-    docker-compose down --remove-orphans 2>/dev/null || true
+    docker compose down --remove-orphans 2>/dev/null || true
 }
 trap cleanup EXIT
 
 # ─── 1. Start all services ───────────────────────────────────────────────────
 log "Starting Docker Compose services..."
-docker-compose up -d --build
+docker compose up -d --build
 
 # ─── 2. Wait for gateway ─────────────────────────────────────────────────────
 log "Waiting for gateway at $GATEWAY_URL..."
@@ -35,7 +35,7 @@ for i in $(seq 1 $WAIT_RETRIES); do
     fi
     if [ "$i" -eq "$WAIT_RETRIES" ]; then
         log "ERROR: Gateway did not become ready after $((WAIT_RETRIES * WAIT_SLEEP))s"
-        docker-compose logs --tail=30
+        docker compose logs --tail=30
         exit 1
     fi
     log "  Waiting... ($i/$WAIT_RETRIES)"
@@ -70,7 +70,7 @@ fi
 # ─── 4. Spring integration tests ─────────────────────────────────────────────
 log ""
 log "Running Spring @SpringBootTest integration tests..."
-./gradlew :write-api:test :read-api:test --info
+./gradlew test --info
 log "Spring integration tests passed ✓"
 
 # ─── 5. Playwright E2E tests ──────────────────────────────────────────────────

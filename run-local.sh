@@ -208,11 +208,15 @@ start_service write-api \
   SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:15432/urlshortener \
   APP_BASE_URL=http://localhost:8081 \
   APP_KEY_GEN_URL=http://localhost:8085 \
+  SPRING_FLYWAY_BASELINE_ON_MIGRATE=true \
+  SPRING_FLYWAY_BASELINE_VERSION=0 \
   java -jar "$ROOT_DIR/write-api/build/libs/write-api-0.0.1-SNAPSHOT.jar"
 
 start_service read-api \
   env \
   SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:15432/urlshortener \
+  SPRING_FLYWAY_BASELINE_ON_MIGRATE=true \
+  SPRING_FLYWAY_BASELINE_VERSION=0 \
   java -jar "$ROOT_DIR/read-api/build/libs/read-api-0.0.1-SNAPSHOT.jar"
 
 start_service analytics-api \

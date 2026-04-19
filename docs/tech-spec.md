@@ -10,11 +10,11 @@ Re-implement the backend of [dilipkumar2k6/url-shortening](https://github.com/di
 
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
-| Backend language | Java 17 | LTS, strong ecosystem, Feistel cipher implementation |
+| Backend language | Java 17 | LTS, strong ecosystem |
 | Framework | Spring Boot 3.2 | Auto-configuration, actuator, security, JPA |
 | Build tool | Gradle 8 (multi-module) | Faster than Maven, single `./gradlew build` for all modules |
 | Auth | Google OAuth2 JWT | Stateless, no session store needed; Spring Security validates JWTs against Google's JWKS endpoint |
-| Primary DB | H2 (TCP server mode) | Zero-install for local dev; write-api owns the TCP server, read-api connects as a client |
+| Primary DB | PostgreSQL 16 | Persistent URL storage + logical replication for CDC |
 | Cache | Redis 7 | Cache-aside pattern; TTL 24h; avoids DB hit on every redirect |
 | Message bus | Kafka (KRaft, no ZooKeeper) | Decouples write/read path from analytics; click events are fire-and-forget |
 | Analytics store | ClickHouse 24 | Columnar, optimized for `GROUP BY + COUNT` queries on append-only click data |
@@ -34,9 +34,8 @@ Re-implement the backend of [dilipkumar2k6/url-shortening](https://github.com/di
 | Class | Purpose |
 |-------|---------|
 | `UrlShortenController` | `POST /api/v1/shorten` — extracts userId from JWT |
-| `UrlShortenServiceImpl` | Redis check → DB check → create new |
-| `UrlCodec` | Feistel cipher encode/decode (32-bit, 4 rounds, base62) |
-| `H2ServerConfig` | Starts H2 TCP server on port 9092 at app startup |
+| `UrlShortenServiceImpl` | Redis check → DB check → request new code from key-gen-service |
+| `KeyGenClient` | Fetches pre-allocated ID blocks from key-gen-service |
 | `SecurityConfig` | Permits anonymous shorten; validates Google JWT if present |
 | `UrlCreatedEvent` | Kafka payload: `{shortCode, longUrl, userId, createdAt}` |
 
@@ -58,9 +57,21 @@ Re-implement the backend of [dilipkumar2k6/url-shortening](https://github.com/di
 **Cache strategy**:
 ```
 1. GET url:{shortCode} from Redis → hit → publish click, return 302
-2. Miss → SELECT from H2 → warm Redis → publish click, return 302
+2. Miss → SELECT from PostgreSQL → warm Redis → publish click, return 302
 3. Not found → 404 (gateway falls back to SPA)
 ```
+
+---
+
+### cdc-worker (no HTTP port)
+
+**Responsibility**: Tails PostgreSQL WAL logs via Debezium and streams changes to Redis and Kafka. Offloads cache warming from the write-api.
+
+---
+
+### key-gen-service (port 8085)
+
+**Responsibility**: Generates unique, non-colliding short codes continuously using a `DUAL_BUFFER` sequence strategy backed by PostgreSQL, dispensing them to `write-api` ahead of time to ensure low latency.
 
 ---
 
@@ -99,25 +110,22 @@ Re-implement the backend of [dilipkumar2k6/url-shortening](https://github.com/di
 
 ---
 
-## Feistel Cipher — Short Code Algorithm
+## Key Generation Service
+
+Short codes are pre-generated and allocated in blocks using a **Dual-Buffer Sequence Strategy** backed by PostgreSQL. 
 
 ```
-Input:  DB row ID (Long, 64-bit)
-Step 1: Truncate to 32-bit int (IDs are small in practice)
-Step 2: Apply 4-round Feistel network with keys [k0, k1, k2, k3]
-        Left  = upper 16 bits
-        Right = lower 16 bits
-        Each round: new_right = left XOR F(right, key)
-                    new_left  = right
-Step 3: Recombine → 32-bit scrambled integer
-Step 4: Base62-encode (0-9, a-z, A-Z) → 6-character string
-
-Properties:
-  - Bijective (no collisions, fully reversible)
-  - Sequential IDs produce non-sequential codes
-  - Same ID always → same code (deterministic)
-  - Codes look random (no enumeration risk)
+Buffer A (Active)     Buffer B (Standby)
+[1000 - 1999]         [2000 - 2999]
 ```
+
+When `write-api` needs a short code, it calls `key-gen-service`. The service dispenses codes from the active buffer in memory. When the active buffer is nearly exhausted, the standby buffer takes over while a new standby block is fetched transactionally from PostgreSQL (`key_blocks` table). This entirely side-steps database locking on every request.
+
+**Properties:**
+- Ultra-low latency ID generation
+- Highly available locally
+- Eliminates collision lookup penalties typical of random short code logic
+
 
 ---
 
@@ -148,7 +156,7 @@ Google OAuth2 JWT flow (no Firebase, no session):
 | Shorten (longUrl → shortCode) | `url:{longUrl}` | 24h | LRU (default Redis) |
 | Redirect (shortCode → longUrl) | `url:{shortCode}` | 24h | LRU |
 
-Both keys are written together on every new URL creation. Read-api warms the cache on DB fallback. No explicit invalidation (URLs are immutable once created).
+Both keys are written together on every new URL creation. `cdc-worker` tails the database WAL to asynchronously warm the cache guaranteeing eventual consistency, while `read-api` explicitly warms the cache as a failover on DB fallback. No explicit invalidation (URLs are immutable once created).
 
 ---
 
@@ -211,16 +219,14 @@ ORDER BY created_at DESC;
 | 8081 | read-api | Internal; exposed for debugging |
 | 8083 | analytics-api | Internal; exposed for debugging |
 | 6379 | Redis | Internal |
-| 9092 | H2 TCP server | Internal (Docker network only) |
+| 5432 | PostgreSQL | Internal (Host port 15432) |
+| 8085 | key-gen-service | Internal allocator API |
 | 9094 | Kafka (external) | External listener for host-side tools |
 | 8123 | ClickHouse HTTP | Internal + exposed for ClickHouse client |
 | 9000 | ClickHouse TCP | Internal |
 
 ---
 
-## Non-Goals (current phases)
-
-- No persistent database (H2 is in-memory, resets on write-api restart)
 - No Flink stream processing (k8s manifests kept from original, not wired up)
 - No SigNoz observability stack (manifests kept, not wired in Docker Compose)
 - No Dead Letter Queue for failed Kafka events

@@ -33,7 +33,7 @@ docker compose up --build
 |-----|------|
 | `http://localhost:8000` | App (via gateway) — use this! |
 | `http://localhost:8000/api/v1/analytics/top` | Top links JSON |
-| `http://localhost:8080/h2-console` | H2 DB browser (JDBC URL: `jdbc:h2:tcp://localhost:9092/mem:urlshortener`) |
+| `localhost:15432` | PostgreSQL DB (Credentials: urluser / urlpass) |
 | `http://localhost:8123` | ClickHouse HTTP interface |
 
 **Tear down**:
@@ -244,14 +244,16 @@ docker compose exec redis redis-cli
 > TTL url:4jTh9q                  # check TTL (should be ~86400s)
 ```
 
-### H2 Database
-Open `http://localhost:8080/h2-console` and connect with:
-- JDBC URL: `jdbc:h2:tcp://localhost:9092/mem:urlshortener`
-- Username: `sa`
-- Password: *(empty)*
+### PostgreSQL Database
+Connect using `psql` or any Postgres GUI client (like pgAdmin or DBeaver):
+- Host: `localhost`
+- Port: `15432`
+- Database: `urlshortener`
+- Username: `urluser`
+- Password: `urlpass`
 
 ```sql
-SELECT * FROM URL_MAPPINGS ORDER BY CREATED_AT DESC LIMIT 10;
+SELECT * FROM url_mappings ORDER BY created_at DESC LIMIT 10;
 ```
 
 ### ClickHouse
