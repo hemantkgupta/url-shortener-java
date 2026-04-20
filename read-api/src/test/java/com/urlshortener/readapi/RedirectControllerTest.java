@@ -70,6 +70,8 @@ class RedirectControllerTest {
         assertThat(connection.getResponseCode()).isEqualTo(HttpStatus.FOUND.value());
         assertThat(connection.getHeaderField("Location"))
                 .isEqualTo(URI.create("https://www.example.com").toString());
+        assertThat(connection.getHeaderField("Cache-Control"))
+                .isEqualTo("public, max-age=86400, immutable");
     }
 
     @Test
@@ -93,6 +95,8 @@ class RedirectControllerTest {
         assertThat(connection.getResponseCode()).isEqualTo(HttpStatus.FOUND.value());
         assertThat(connection.getHeaderField("Location"))
                 .isEqualTo(URI.create("https://cached.example.com").toString());
+        assertThat(connection.getHeaderField("Cache-Control"))
+                .isEqualTo("public, max-age=86400, immutable");
     }
 
     @Test

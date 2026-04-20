@@ -22,6 +22,7 @@ public class RedirectController {
         String longUrl = redirectService.resolve(shortCode);
         return ResponseEntity.status(HttpStatus.FOUND)
                 .location(URI.create(longUrl))
+                .header("Cache-Control", "public, max-age=86400, immutable")
                 .build();
     }
 }

@@ -2,179 +2,200 @@
 
 ## Project Goal
 
-Re-implement the backend of [dilipkumar2k6/url-shortening](https://github.com/dilipkumar2k6/url-shortening) in **Java + Spring Boot**, keeping the original React frontend and Kubernetes manifests unchanged. The Java backend must be API-compatible with the original Go services.
-
----
+Reimplement the backend of [dilipkumar2k6/url-shortening](https://github.com/dilipkumar2k6/url-shortening) in **Java + Spring Boot**, while keeping the frontend contract intact and making the system design choices explicit in code. The current repo is no longer a simple "write row, read row" clone; it includes a dedicated key-generation service, CDC cache warming, a layered redirect pipeline, analytics offloading, and local observability.
 
 ## Technology Choices
 
-| Layer | Technology | Rationale |
-|-------|-----------|-----------|
-| Backend language | Java 17 | LTS, strong ecosystem |
-| Framework | Spring Boot 3.2 | Auto-configuration, actuator, security, JPA |
-| Build tool | Gradle 8 (multi-module) | Faster than Maven, single `./gradlew build` for all modules |
-| Auth | Google OAuth2 JWT | Stateless, no session store needed; Spring Security validates JWTs against Google's JWKS endpoint |
-| Primary DB | PostgreSQL 16 | Persistent URL storage + logical replication for CDC |
-| Cache | Redis 7 | Cache-aside pattern; TTL 24h; avoids DB hit on every redirect |
-| Message bus | Kafka (KRaft, no ZooKeeper) | Decouples write/read path from analytics; click events are fire-and-forget |
-| Analytics store | ClickHouse 24 | Columnar, optimized for `GROUP BY + COUNT` queries on append-only click data |
-| API Gateway | Nginx (stable-alpine) | Lightweight reverse proxy; single port `8000` for all traffic |
-| Frontend | React 19 + Vite + Tailwind | Unchanged from original repo |
-| Container | Docker Compose (local) | Full stack in one command |
+| Layer | Technology | Why it is here |
+|---|---|---|
+| Backend language | Java 17 | Stable LTS baseline across all services |
+| Framework | Spring Boot 3.2 | Fast service bootstrapping, Actuator, security, JPA |
+| Build tool | Gradle 8 multi-module | One repo, several deployable services |
+| Auth | Google OAuth2 JWT | Stateless auth for user-owned history without a user table |
+| Primary DB | PostgreSQL 16 | Transactional source of truth and CDC source |
+| Cache | Redis 7 + RedisBloom | Reverse lookup cache, redirect cache, Bloom filter backing, rate limit counters |
+| L1 cache | Caffeine | In-process hot-key cache for the redirect path |
+| Key generation | PostgreSQL-backed dual buffer by default; Snowflake optional | Generated codes without per-request DB sequence contention |
+| Message bus | Kafka (KRaft) | Decouples analytics and CDC-side event publication |
+| Analytics store | ClickHouse 24 | Fast append-heavy analytical queries |
+| Public ingress | Nginx | Single public entry point on `:8000` |
+| Optional edge controls | Envoy + `rls-service` | Standalone rate-limited read/write entry points |
+| Observability | OpenTelemetry Java agent + Actuator + SigNoz | Local traces, metrics, logs, and request correlation |
+| Local orchestration | Docker Compose | Full-stack local execution |
 
----
+## Current Topology
 
-## Service Breakdown
+### `write-api` (`:8080`)
 
-### write-api (port 8080)
+**Responsibility**: create short URLs, enforce custom slug rules, dedupe repeat submissions, request generated codes, persist mappings, and emit create events.
 
-**Responsibility**: Accept URL shortening requests, persist to DB, cache in Redis, publish events to Kafka.
+**Actual flow in code**:
 
-**Key classes**:
-| Class | Purpose |
-|-------|---------|
-| `UrlShortenController` | `POST /api/v1/shorten` — extracts userId from JWT |
-| `UrlShortenServiceImpl` | Redis check → DB check → request new code from key-gen-service |
-| `KeyGenClient` | Fetches pre-allocated ID blocks from key-gen-service |
-| `SecurityConfig` | Permits anonymous shorten; validates Google JWT if present |
-| `UrlCreatedEvent` | Kafka payload: `{shortCode, longUrl, userId, createdAt}` |
-
-**Short URL format**: `http://localhost:8000/{shortCode}` (gateway URL)
-
----
-
-### read-api (port 8081)
-
-**Responsibility**: Resolve short codes to long URLs, issue 302 redirects, publish click events to Kafka.
+1. Validate `long_url` and optional `custom_slug`.
+2. For generated codes, check `Redis GET url:{longUrl}` first.
+3. Fall back to `findByLongUrl()` in PostgreSQL.
+4. If still absent, request the next generated code from `key-gen-service`.
+5. Persist `UrlMapping`.
+6. Immediately `BF.ADD` the new short code into `bf:short-codes`.
+7. Publish `url.created`.
+8. Do **not** inline-warm Redis; that is CDC's job.
 
 **Key classes**:
-| Class | Purpose |
-|-------|---------|
-| `RedirectController` | `GET /{shortCode}` — returns `302 Location: {longUrl}` |
-| `RedirectService` | Redis cache-aside → DB fallback; fail-open Kafka publish |
-| `UrlClickedEvent` | Kafka payload: `{shortCode, longUrl, clickedAt}` |
 
-**Cache strategy**:
+| Class | Role |
+|---|---|
+| `UrlShortenController` | `POST /api/v1/shorten` entry point |
+| `UrlShortenServiceImpl` | Validation, dedupe, create flow, Bloom registration |
+| `KeyGenClient` | Fetches the next generated code |
+| `UrlCodec` | Feistel-based encode/decode |
+| `BloomFilterService` | `BF.ADD`/`BF.EXISTS` wrapper over RedisBloom |
+
+### `read-api` (`:8081`)
+
+**Responsibility**: resolve short codes, distinguish 404 vs 410, keep redirect latency low, and publish click events without blocking the response.
+
+**Actual flow in code**:
+
+1. `BF.EXISTS bf:short-codes {shortCode}`. If definitely absent, return `404`.
+2. Check Caffeine L1 (`shortCodeL1Cache`).
+3. Check Redis L2 (`url:{shortCode}`).
+4. On Redis hit, probabilistically early-refresh with XFetch.
+5. On miss or refresh trigger, query PostgreSQL.
+6. If mapping exists but expired, return `410 Gone`.
+7. Warm Redis and L1 from the DB result.
+8. Publish `url.clicked` asynchronously.
+9. Return `302 Found` with `Cache-Control: public, max-age=86400, immutable`.
+
+**Key classes**:
+
+| Class | Role |
+|---|---|
+| `RedirectController` | Redirect HTTP response construction |
+| `RedirectService` | Bloom -> L1 -> L2 -> DB -> async event pipeline |
+| `CacheConfig` | Caffeine L1 configuration |
+| `BloomFilterService` | Read-path Bloom membership checks |
+| `UrlExpiredException` | Expired-code branch (`410 Gone`) |
+
+### `key-gen-service` (`:8085`)
+
+**Responsibility**: generate short-code IDs continuously without turning every shorten request into a fresh global counter round-trip.
+
+**Default implementation**:
+
+- `DualBufferKeyGenService`
+- Block size: `10000`
+- Prefetch threshold: `0.8`
+- Counter store: PostgreSQL `key_blocks`
+- Claim SQL:
+
+```sql
+UPDATE key_blocks
+SET next_id = next_id + ?
+WHERE id = 1
+RETURNING next_id - ?
 ```
-1. GET url:{shortCode} from Redis → hit → publish click, return 302
-2. Miss → SELECT from PostgreSQL → warm Redis → publish click, return 302
-3. Not found → 404 (gateway falls back to SPA)
-```
 
----
+**Important detail**: the service returns already encoded public short codes via `UrlCodec.encode(nextId())`. `write-api` never sees a raw counter when using this path.
 
-### cdc-worker (no HTTP port)
+**Alternative**:
 
-**Responsibility**: Tails PostgreSQL WAL logs via Debezium and streams changes to Redis and Kafka. Offloads cache warming from the write-api.
+- `SnowflakeKeyGenService` can be enabled via `app.key-gen.strategy=SNOWFLAKE`.
 
----
+### `cdc-worker`
 
-### key-gen-service (port 8085)
+**Responsibility**: tail PostgreSQL WAL with Debezium and keep Redis aligned with the DB.
 
-**Responsibility**: Generates unique, non-colliding short codes continuously using a `DUAL_BUFFER` sequence strategy backed by PostgreSQL, dispensing them to `write-api` ahead of time to ensure low latency.
+**Actual behavior**:
 
----
+- Handles `c`, `u`, `d`, and `r` events from `url_mappings`.
+- Writes both:
+  - `url:{shortCode} -> longUrl`
+  - `url:{longUrl} -> shortCode`
+- Derives Redis TTL from `expires_at` when present.
+- Evicts both keys on delete or already-expired updates.
+- Publishes supplemental `url.created.cdc` events on inserts.
 
-### analytics-worker (no HTTP port)
+**Why this matters**: the write path stays lean, and Redis can self-heal from DB truth even if `write-api` crashes after commit.
 
-**Responsibility**: Kafka consumer that persists click and created events to ClickHouse.
+### `analytics-worker`
 
-**Topics consumed**:
-| Topic | Handler | ClickHouse table |
-|-------|---------|-----------------|
+**Responsibility**: consume append-only events and persist them to ClickHouse.
+
+**Currently consumed topics**:
+
+| Topic | Handler | Table |
+|---|---|---|
 | `url.clicked` | `onUrlClicked()` | `analytics.url_clicks` |
 | `url.created` | `onUrlCreated()` | `analytics.url_created` |
 
-**Schema bootstrap**: On startup, `ClickHouseConfig` runs `CREATE TABLE IF NOT EXISTS` — idempotent, safe to restart.
+`url.created.cdc` is currently **not** consumed by `analytics-worker`; it is a supplementary stream for downstream consumers or future replay-safe flows.
 
-**Error handling**: Bad/malformed events are logged and skipped (no DLQ in Phase 3 — planned for Phase 6).
+### `analytics-api` (`:8083`)
 
----
+**Responsibility**: serve analytics queries from ClickHouse instead of PostgreSQL.
 
-### analytics-api (port 8083)
+**Public/secured split**:
 
-**Responsibility**: Serve pre-aggregated analytics queries from ClickHouse to the frontend.
+- `GET /api/v1/analytics/top` is public
+- `GET /api/v1/history` requires a Google JWT
 
-**Key classes**:
-| Class | Purpose |
-|-------|---------|
-| `AnalyticsController` | REST endpoints `/api/v1/analytics/top` and `/api/v1/history` |
-| `AnalyticsQueryService` | Raw JDBC queries against ClickHouse |
-| `SecurityConfig` | Top analytics = public; history = requires Google JWT |
+### `rls-service` + Envoy
 
----
+**Responsibility**: optional shared rate limiting for read/write traffic.
 
-### gateway / Nginx (port 8000)
+**How it works**:
 
-**Responsibility**: Single entry point. Routes by path prefix. SPA fallback via `proxy_intercept_errors`.
+- Envoy extracts `remote_address` and calls `rls-service` over gRPC.
+- `rls-service` runs a Redis Lua sliding-window algorithm using sorted sets.
+- Domains:
+  - `write`: 100 requests / 60 seconds / IP
+  - `read`: 1000 requests / 60 seconds / IP
+- Fail-open if Redis or RLS is unavailable.
 
----
-
-## Key Generation Service
-
-Short codes are pre-generated and allocated in blocks using a **Dual-Buffer Sequence Strategy** backed by PostgreSQL. 
-
-```
-Buffer A (Active)     Buffer B (Standby)
-[1000 - 1999]         [2000 - 2999]
-```
-
-When `write-api` needs a short code, it calls `key-gen-service`. The service dispenses codes from the active buffer in memory. When the active buffer is nearly exhausted, the standby buffer takes over while a new standby block is fetched transactionally from PostgreSQL (`key_blocks` table). This entirely side-steps database locking on every request.
-
-**Properties:**
-- Ultra-low latency ID generation
-- Highly available locally
-- Eliminates collision lookup penalties typical of random short code logic
-
-
----
+**Important boundary**: the default public gateway on `:8000` routes directly to `write-api` / `read-api`. Envoy + RLS are available as alternate entry points, not the default path today.
 
 ## Authentication
 
-Google OAuth2 JWT flow (no Firebase, no session):
+Google JWTs are validated against `https://www.googleapis.com/oauth2/v3/certs`.
 
-```
-1. Frontend: user clicks "Sign In with Google"
-2. Google OAuth consent screen
-3. Google returns ID token (JWT signed by Google's private key)
-4. Frontend: stores token in memory (tokenStore.js)
-5. Frontend: sends token as Authorization: Bearer {token} on API calls
-6. write-api / analytics-api: Spring Security fetches Google's public
-   keys from https://www.googleapis.com/oauth2/v3/certs and validates
-   the JWT signature, expiry, and issuer automatically
-7. Controller receives @AuthenticationPrincipal Jwt with sub = Google user ID
-```
+- `POST /api/v1/shorten` allows anonymous requests.
+- Authenticated requests carry `userId` into `url.created`.
+- `analytics-api` uses the same JWT validation for personal history queries.
 
-**Anonymous access**: `POST /api/v1/shorten` is permitted without a token. `userId` is stored as `null` in that case.
+## Cache Strategy
 
----
+| Layer | Key / Structure | TTL | Purpose |
+|---|---|---|---|
+| Bloom gate | `bf:short-codes` | n/a | Fast reject of definitely-unknown short codes |
+| L1 redirect cache | Caffeine `shortCodeL1Cache` | 60s | Absorb very hot redirect traffic in-process |
+| L2 redirect cache | `url:{shortCode}` | 24h or bounded by `expires_at` | Network cache for redirect resolution |
+| Reverse dedupe cache | `url:{longUrl}` | 24h or bounded by `expires_at` | Return existing short code without a DB hit |
 
-## Caching Strategy
+**Write-path rule**: `write-api` only performs `BF.ADD` immediately. Redis warming is intentionally delegated to `cdc-worker`.
 
-| Operation | Cache key | TTL | Eviction |
-|-----------|-----------|-----|---------|
-| Shorten (longUrl → shortCode) | `url:{longUrl}` | 24h | LRU (default Redis) |
-| Redirect (shortCode → longUrl) | `url:{shortCode}` | 24h | LRU |
+**Read-path rule**: `read-api` can still warm Redis/L1 on DB fallback so a cold cache does not require waiting for CDC.
 
-Both keys are written together on every new URL creation. `cdc-worker` tails the database WAL to asynchronously warm the cache guaranteeing eventual consistency, while `read-api` explicitly warms the cache as a failover on DB fallback. No explicit invalidation (URLs are immutable once created).
+**Invalidation model**:
 
----
+- Redis keys are evicted by CDC delete/update handling.
+- L1 Caffeine is time-bounded, not actively invalidated.
+- No CDN purge flow exists in the repo today.
 
 ## Kafka Topics
 
-| Topic | Producer | Consumer | Payload |
-|-------|---------|---------|---------|
-| `url.created` | write-api | analytics-worker | `{shortCode, longUrl, userId, createdAt}` |
-| `url.clicked` | read-api | analytics-worker | `{shortCode, longUrl, clickedAt}` |
+| Topic | Producer | Primary consumer | Payload |
+|---|---|---|---|
+| `url.created` | `write-api` | `analytics-worker` | `{shortCode, longUrl, userId, createdAt}` |
+| `url.clicked` | `read-api` | `analytics-worker` | `{shortCode, longUrl, clickedAt}` |
+| `url.created.cdc` | `cdc-worker` | none in this repo | CDC-derived insert mirror |
 
-Serialization: JSON (Spring Kafka `JsonSerializer`). No type headers — consumer uses `Map<String, Object>` for forward compatibility.
-
----
+Serialization is JSON. Consumers currently deserialize to `Map<String, Object>` for forward compatibility.
 
 ## ClickHouse Schema
 
+The analytics schema is intentionally minimal today:
+
 ```sql
--- Click events (from url.clicked Kafka topic)
 CREATE TABLE analytics.url_clicks (
     short_code  String,
     long_url    String,
@@ -182,7 +203,6 @@ CREATE TABLE analytics.url_clicks (
 ) ENGINE = MergeTree()
 ORDER BY (short_code, clicked_at);
 
--- Creation events (from url.created Kafka topic)
 CREATE TABLE analytics.url_created (
     short_code  String,
     long_url    String,
@@ -192,43 +212,22 @@ CREATE TABLE analytics.url_created (
 ORDER BY (user_id, created_at);
 ```
 
-**Query patterns**:
-```sql
--- Top URLs by click count (paginated)
-SELECT short_code, long_url, count() AS click_count
-FROM analytics.url_clicks
-GROUP BY short_code, long_url
-ORDER BY click_count DESC
-LIMIT 10 OFFSET 0;
+There is no geo/device/referrer enrichment pipeline in the committed code today.
 
--- User's link history
-SELECT short_code, long_url, created_at
-FROM analytics.url_created
-WHERE user_id = 'google-uid-123'
-ORDER BY created_at DESC;
-```
+## Observability
 
----
+Current local stack support:
 
-## Port Map
+- `X-Request-Id` is generated or propagated at the gateway and echoed by services.
+- Request IDs are placed in MDC so logs can be correlated.
+- Java services run with the OpenTelemetry Java agent in Docker Compose.
+- SigNoz is included locally for traces/metrics/log inspection.
+- Spring Actuator and Prometheus endpoints are exposed per service.
 
-| Port | Service | Notes |
-|------|---------|-------|
-| **8000** | Nginx Gateway | **Primary user-facing port** |
-| 8080 | write-api | Internal; exposed for debugging |
-| 8081 | read-api | Internal; exposed for debugging |
-| 8083 | analytics-api | Internal; exposed for debugging |
-| 6379 | Redis | Internal |
-| 5432 | PostgreSQL | Internal (Host port 15432) |
-| 8085 | key-gen-service | Internal allocator API |
-| 9094 | Kafka (external) | External listener for host-side tools |
-| 8123 | ClickHouse HTTP | Internal + exposed for ClickHouse client |
-| 9000 | ClickHouse TCP | Internal |
+## Known Gaps / Deliberate Limits
 
----
-
-- No Flink stream processing (k8s manifests kept from original, not wired up)
-- No SigNoz observability stack (manifests kept, not wired in Docker Compose)
-- No Dead Letter Queue for failed Kafka events
-- No rate limiting (Envoy k8s manifests reference this, not implemented locally)
-- No horizontal scaling (single instance per service in Docker Compose)
+- No CDN purge workflow for deleted or abuse-removed links
+- No DLQ for malformed Kafka events
+- No distributed geo/device enrichment in analytics
+- No consumer of `url.created.cdc` in the committed repo
+- Docker Compose runs single instances; horizontal scaling concerns remain architectural, not exercised locally
